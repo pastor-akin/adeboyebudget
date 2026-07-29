@@ -31,7 +31,8 @@
       "expo-router"
     ],
     "experiments": {
-      "typedRoutes": true
+      "typedRoutes": true,
+      "baseUrl": "/adeboye-budget"
     },
     "scheme": "adeboye-budget",
     "extra": {
