@@ -1,0 +1,61 @@
+name: Deploy web app to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Export web build
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+        run: npx expo export -p web
+
+      # GitHub Pages ignores files/folders starting with "_" (like Expo's
+      # "_expo" bundle folder) unless this file is present.
+      - name: Disable Jekyll processing
+        run: touch dist/.nojekyll
+
+      # Single-page-app fallback: GitHub Pages has no server-side rewrites,
+      # so a direct link to e.g. /adeboyebudget/budgets would 404. Serving
+      # index.html as the 404 page lets Expo Router's client-side router
+      # take over and render the right screen.
+      - name: SPA fallback for client-side routing
+        run: cp dist/index.html dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
