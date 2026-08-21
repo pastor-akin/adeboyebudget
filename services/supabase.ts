@@ -144,6 +144,59 @@ export async function renameCategory(oldName: string, newName: string): Promise<
   if (expensesError) throw expensesError;
 }
 
+/**
+ * Merges a duplicate category into another one: every expense and every
+ * budget_limits row filed under `fromName` is moved onto `intoName` (limits
+ * for the same period are summed rather than overwritten), then `fromName`
+ * is removed from budget_categories (only if it's a custom category — a
+ * default category is cleared of its budget but stays in the list, same as
+ * the normal delete behavior). Use this to fix an accidental duplicate
+ * category (e.g. two "Eating Out" entries) without losing any history.
+ */
+export async function mergeCategory(fromName: string, intoName: string): Promise<void> {
+  const from = fromName.trim();
+  const into = intoName.trim();
+  if (!from || !into || from === into) return;
+
+  const { error: expError } = await supabase
+    .from('budget_expenses')
+    .update({ category: into })
+    .eq('category', from);
+  if (expError) throw expError;
+
+  const [{ data: fromLimits, error: flError }, { data: intoLimits, error: ilError }] = await Promise.all([
+    supabase.from('budget_limits').select('*').eq('category', from),
+    supabase.from('budget_limits').select('*').eq('category', into),
+  ]);
+  if (flError) throw flError;
+  if (ilError) throw ilError;
+
+  const intoByMonth = new Map((intoLimits ?? []).map(l => [l.month, l]));
+
+  for (const fl of fromLimits ?? []) {
+    const existing = intoByMonth.get(fl.month);
+    const amount = existing ? Number(existing.amount) + Number(fl.amount) : Number(fl.amount);
+    const { error } = await supabase.from('budget_limits').upsert(
+      { month: fl.month, category: into, amount, frequency: fl.frequency, updated_at: new Date().toISOString() },
+      { onConflict: 'month,category' },
+    );
+    if (error) throw error;
+  }
+
+  const { error: delLimitsError } = await supabase
+    .from('budget_limits')
+    .delete()
+    .eq('category', from);
+  if (delLimitsError) throw delLimitsError;
+
+  const { error: delCatError } = await supabase
+    .from('budget_categories')
+    .delete()
+    .eq('name', from)
+    .eq('is_default', false);
+  if (delCatError) throw delCatError;
+}
+
 // ─── Expenses ────────────────────────────────────────────────────────────────
 
 export async function getExpenses(month: string): Promise<Expense[]> {

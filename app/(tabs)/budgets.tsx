@@ -12,14 +12,14 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, TextInput,
-  KeyboardAvoidingView, Platform, ActivityIndicator, Image, Share, Alert as RNAlert,
+  KeyboardAvoidingView, Platform, UIManager, LayoutAnimation, ActivityIndicator, Image, Share, Alert as RNAlert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import {
   supabase, AppCategory, BudgetLimit, Expense, Income,
-  getCategories, addCategory, renameCategory, deleteCategory,
+  getCategories, addCategory, renameCategory, deleteCategory, mergeCategory,
   getYearlyBudgets, upsertBudget, deleteBudget,
   distributeYearlyBudget, clearYearlyDistribution,
   getExpensesForYear, addExpense, deleteExpense, uploadReceipt,
@@ -30,6 +30,10 @@ import {
   PalaceColors as Colors, PalaceSpacing as Spacing, PalaceRadius as Radius,
   PalaceShadow as Shadow, PalaceTypography as Typography,
 } from '../../constants/palaceTheme';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimentalAndroid) {
+  UIManager.setLayoutAnimationEnabledExperimentalAndroid(true);
+}
 
 type Mode = 'categories' | 'expenses' | 'income' | 'overview';
 
@@ -78,6 +82,10 @@ export default function BudgetsScreen() {
   // expenses drill-down
   const [activeCategory, setActiveCategory] = useState<AppCategory | null>(null);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+
+  // accordion expand + merge-duplicate picker
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
+  const [mergeSource, setMergeSource] = useState<AppCategory | null>(null);
 
   // add-expense form
   const [showExpForm, setShowExpForm] = useState(false);
@@ -214,6 +222,35 @@ export default function BudgetsScreen() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const toggleExpand = (name: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedCategory(prev => (prev === name ? null : name));
+  };
+
+  const openMergePicker = (c: AppCategory) => setMergeSource(c);
+
+  const performMerge = (target: AppCategory) => {
+    if (!mergeSource) return;
+    AlertConfirm(
+      'Merge Categories',
+      `Move every expense and budget from "${mergeSource.name}" into "${target.name}"? "${mergeSource.name}" will be removed and its history will live under "${target.name}" instead. This can't be undone.`,
+      async () => {
+        setBusy(true);
+        try {
+          await mergeCategory(mergeSource.name, target.name);
+          setMergeSource(null);
+          setExpandedCategory(null);
+          load();
+        } catch (e: any) {
+          Alert('Error', e.message ?? 'Could not merge these categories.');
+        } finally {
+          setBusy(false);
+        }
+      },
+      'Merge',
+    );
   };
 
   const removeCategory = (c: AppCategory) => {
@@ -624,6 +661,23 @@ export default function BudgetsScreen() {
   const totalPlanned = Object.values(plannedByCategory).reduce((s, v) => s + v, 0);
   const totalSpent = Object.values(spentByCategory).reduce((s, v) => s + v, 0);
 
+  // "This Month" summary — a plain-language snapshot instead of the 12-row
+  // yearly tables, so it's easy to see at a glance how the current month is
+  // going. Only meaningful when viewing the current calendar year.
+  const now = new Date();
+  const isCurrentYear = year === now.getFullYear();
+  const currentMonthNum = now.getMonth() + 1;
+  const currentMonthLabel = now.toLocaleDateString('en-US', { month: 'long' });
+  const thisMonthExpenses = isCurrentYear
+    ? allExpenses.filter(e => e.date && parseInt(e.date.slice(5, 7), 10) === currentMonthNum)
+    : [];
+  const thisMonthSpent = thisMonthExpenses.reduce((s, e) => s + Number(e.amount), 0);
+  const monthlyPace = totalPlanned / 12;
+  const thisMonthRemaining = monthlyPace - thisMonthSpent;
+  const thisMonthByCat: Record<string, number> = {};
+  for (const e of thisMonthExpenses) thisMonthByCat[e.category] = (thisMonthByCat[e.category] ?? 0) + Number(e.amount);
+  const topThisMonth = Object.entries(thisMonthByCat).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
@@ -635,8 +689,47 @@ export default function BudgetsScreen() {
 
       {loading ? <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View> : (
         <ScrollView contentContainerStyle={{ padding: Spacing.md, gap: Spacing.sm, paddingBottom: 40 }}>
+          {isCurrentYear && (thisMonthSpent > 0 || monthlyPace > 0) ? (
+            <View style={styles.thisMonthCard}>
+              <Text style={styles.thisMonthTitle}>{currentMonthLabel} at a Glance</Text>
+              {monthlyPace > 0 ? (
+                <>
+                  <View style={styles.progressBarBg}>
+                    <View style={[styles.progressBarFill, { width: `${Math.min(100, (thisMonthSpent / monthlyPace) * 100)}%` as any, backgroundColor: thisMonthRemaining < 0 ? '#EF4444' : Colors.primary }]} />
+                  </View>
+                  <Text style={styles.thisMonthStatus}>
+                    {thisMonthRemaining < 0
+                      ? `🔴 $${fmt(Math.abs(thisMonthRemaining))} over your ~$${fmt(monthlyPace)}/mo pace`
+                      : `🟢 $${fmt(thisMonthRemaining)} left of your ~$${fmt(monthlyPace)}/mo pace`}
+                  </Text>
+                </>
+              ) : (
+                <Text style={styles.thisMonthStatus}>Set yearly budgets below to see how this month is pacing.</Text>
+              )}
+              <View style={styles.summaryRow}>
+                <View style={{ flex: 1 }}><Text style={styles.summaryLabel}>Spent</Text><Text style={[styles.summaryVal, { color: '#F97316' }]}>${fmt(thisMonthSpent)}</Text></View>
+                {monthlyPace > 0 ? <View style={{ flex: 1 }}><Text style={styles.summaryLabel}>Monthly Pace</Text><Text style={styles.summaryVal}>${fmt(monthlyPace)}</Text></View> : null}
+              </View>
+              {topThisMonth.length > 0 ? (
+                <View style={{ gap: 4 }}>
+                  <Text style={styles.thisMonthTopLabel}>Top categories this month</Text>
+                  {topThisMonth.map(([name, amt]) => {
+                    const cat = categories.find(c => c.name === name);
+                    return (
+                      <View key={name} style={styles.thisMonthTopRow}>
+                        <Text style={styles.thisMonthTopName} numberOfLines={1}>{cat?.emoji ?? '📦'} {name}</Text>
+                        <Text style={styles.thisMonthTopAmt}>${fmt(amt)}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
+          ) : null}
+
           {categories.length > 0 && (
             <View style={styles.summaryCard}>
+              <Text style={styles.sectionLabel}>{yearKey} Totals</Text>
               <View style={styles.summaryRow}>
                 <View style={{ flex: 1 }}><Text style={styles.summaryLabel}>Total Planned</Text><Text style={styles.summaryVal}>${fmt(totalPlanned)}</Text></View>
                 <View style={{ flex: 1 }}><Text style={styles.summaryLabel}>Total Spent</Text><Text style={[styles.summaryVal, { color: '#F97316' }]}>${fmt(totalSpent)}</Text></View>
@@ -656,31 +749,72 @@ export default function BudgetsScreen() {
             const spent = spentByCategory[c.name] ?? 0;
             const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
             const over = planned > 0 && spent > planned;
+            const isExpanded = expandedCategory === c.name;
             return (
               <View key={c.name} style={styles.catCard}>
-                <Pressable style={{ flex: 1 }} onPress={() => openExpenses(c)}>
-                  <View style={styles.catTitleRow}>
-                    <Text style={styles.catTitle} numberOfLines={1}>{c.emoji} {c.name}</Text>
-                    <MaterialIcons name="chevron-right" size={18} color={Colors.textMuted} />
+                <Pressable style={styles.catHeaderRow} onPress={() => toggleExpand(c.name)}>
+                  <Text style={styles.catTitle} numberOfLines={1}>{c.emoji} {c.name}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={[styles.catHeaderAmt, over && { color: '#EF4444' }]}>${fmt(spent)}</Text>
+                    <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={22} color={Colors.textMuted} />
                   </View>
-                  <Text style={styles.catMeta}>
-                    {planned > 0 ? `$${fmt(spent)} of $${fmt(planned)} spent${over ? ' — over budget' : ''}` : `$${fmt(spent)} spent · No budget set`}
-                  </Text>
-                  {planned > 0 ? (
-                    <View style={styles.progressBarBg}>
-                      <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: over ? '#EF4444' : Colors.primary }]} />
-                    </View>
-                  ) : null}
                 </Pressable>
-                <View style={styles.catActions}>
-                  <Pressable style={styles.iconBtn} onPress={() => openEditCategory(c)} hitSlop={4}><MaterialIcons name="edit" size={16} color={Colors.primary} /></Pressable>
-                  <Pressable style={[styles.iconBtn, { borderColor: '#EF444440' }]} onPress={() => removeCategory(c)} hitSlop={4}><MaterialIcons name="delete-outline" size={16} color="#EF4444" /></Pressable>
-                </View>
+
+                {isExpanded ? (
+                  <View style={styles.catExpanded}>
+                    <Text style={styles.catMeta}>
+                      {planned > 0 ? `$${fmt(spent)} of $${fmt(planned)} spent${over ? ' — over budget' : ''}` : `$${fmt(spent)} spent this year · No budget set`}
+                    </Text>
+                    {planned > 0 ? (
+                      <View style={styles.progressBarBg}>
+                        <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: over ? '#EF4444' : Colors.primary }]} />
+                      </View>
+                    ) : null}
+                    <View style={styles.catExpandedActions}>
+                      <Pressable style={styles.expandedActionBtn} onPress={() => openExpenses(c)}>
+                        <MaterialIcons name="receipt-long" size={15} color={Colors.primary} />
+                        <Text style={styles.expandedActionText}>Expenses</Text>
+                      </Pressable>
+                      <Pressable style={styles.expandedActionBtn} onPress={() => openEditCategory(c)}>
+                        <MaterialIcons name="edit" size={15} color={Colors.primary} />
+                        <Text style={styles.expandedActionText}>Edit</Text>
+                      </Pressable>
+                      <Pressable style={styles.expandedActionBtn} onPress={() => openMergePicker(c)}>
+                        <MaterialIcons name="call-merge" size={15} color={Colors.primary} />
+                        <Text style={styles.expandedActionText}>Merge</Text>
+                      </Pressable>
+                      <Pressable style={[styles.expandedActionBtn, { borderColor: '#EF444440' }]} onPress={() => removeCategory(c)}>
+                        <MaterialIcons name="delete-outline" size={15} color="#EF4444" />
+                        <Text style={[styles.expandedActionText, { color: '#EF4444' }]}>Delete</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
               </View>
             );
           })}
         </ScrollView>
       )}
+
+      {mergeSource ? (
+        <View style={styles.sheetOverlay}>
+          <View style={styles.sheet}>
+            <Text style={styles.sheetTitle}>Merge "{mergeSource.name}" into…</Text>
+            <Text style={styles.mergeHint}>Pick the category to keep. All of "{mergeSource.name}"'s expenses and budget move over, and the duplicate disappears.</Text>
+            <ScrollView style={{ maxHeight: 300 }}>
+              {categories.filter(c => c.name !== mergeSource.name).map(c => (
+                <Pressable key={c.name} style={styles.mergeOptionRow} onPress={() => performMerge(c)}>
+                  <Text style={styles.mergeOptionText} numberOfLines={1}>{c.emoji} {c.name}</Text>
+                  <MaterialIcons name="chevron-right" size={18} color={Colors.textMuted} />
+                </Pressable>
+              ))}
+            </ScrollView>
+            <Pressable style={[styles.cancelBtn, { marginTop: 12 }]} onPress={() => setMergeSource(null)}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
 
       {showCatForm ? (
         <KeyboardAvoidingView style={styles.sheetOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -708,10 +842,10 @@ export default function BudgetsScreen() {
 function Alert(title: string, message?: string) {
   RNAlert.alert(title, message);
 }
-function AlertConfirm(title: string, message: string, onConfirm: () => void) {
+function AlertConfirm(title: string, message: string, onConfirm: () => void, confirmLabel: string = 'Delete') {
   RNAlert.alert(title, message, [
     { text: 'Cancel', style: 'cancel' },
-    { text: 'Delete', style: 'destructive', onPress: onConfirm },
+    { text: confirmLabel, style: confirmLabel === 'Delete' ? 'destructive' : 'default', onPress: onConfirm },
   ]);
 }
 
@@ -765,12 +899,30 @@ const styles = StyleSheet.create({
   emptyTitle: { ...Typography.h3, color: Colors.textPrimary, textAlign: 'center' },
   emptyText: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22 },
   emptyCta: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.primary, borderRadius: Radius.full, paddingHorizontal: 18, paddingVertical: 12, marginTop: 8, ...Shadow.glow },
-  catCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.surfaceBorder, padding: Spacing.md, ...Shadow.card },
+  catCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.surfaceBorder, ...Shadow.card, overflow: 'hidden' },
+  catHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: Spacing.md },
   catTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  catTitle: { ...Typography.bodyMedium, color: Colors.textPrimary, fontWeight: '700', flexShrink: 1 },
+  catTitle: { ...Typography.bodyMedium, color: Colors.textPrimary, fontWeight: '700', flexShrink: 1, fontSize: 15 },
+  catHeaderAmt: { ...Typography.bodyMedium, color: Colors.textSecondary, fontWeight: '700' },
   catMeta: { ...Typography.caption, color: Colors.textMuted, marginTop: 3, marginBottom: 6 },
+  catExpanded: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.md, gap: 6, borderTopWidth: 1, borderTopColor: Colors.surfaceBorder, paddingTop: 10 },
+  catExpandedActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  expandedActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.background, borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.surfaceBorder, paddingHorizontal: 12, paddingVertical: 7 },
+  expandedActionText: { ...Typography.label, color: Colors.primary, fontWeight: '700', fontSize: 12.5 },
   catActions: { flexDirection: 'column', gap: 6 },
   iconBtn: { width: 30, height: 30, borderRadius: Radius.md, backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' },
+  // "this month" summary
+  thisMonthCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.primary + '30', padding: Spacing.md, gap: 10, ...Shadow.card },
+  thisMonthTitle: { ...Typography.h3, color: Colors.textPrimary, fontWeight: '700', fontSize: 16 },
+  thisMonthStatus: { ...Typography.body, color: Colors.textSecondary, fontSize: 13.5, fontWeight: '600' },
+  thisMonthTopLabel: { ...Typography.caption, color: Colors.textMuted, fontWeight: '700', textTransform: 'uppercase', fontSize: 10, letterSpacing: 0.6, marginTop: 2 },
+  thisMonthTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 3 },
+  thisMonthTopName: { ...Typography.body, color: Colors.textPrimary, fontSize: 13.5, flexShrink: 1, marginRight: 8 },
+  thisMonthTopAmt: { ...Typography.body, color: Colors.textSecondary, fontSize: 13.5, fontWeight: '700' },
+  // merge picker
+  mergeHint: { ...Typography.caption, color: Colors.textMuted, fontSize: 12.5, lineHeight: 17, marginBottom: 10 },
+  mergeOptionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder },
+  mergeOptionText: { ...Typography.body, color: Colors.textPrimary, fontSize: 15, flexShrink: 1, marginRight: 8 },
   // monthly pacing / comparison
   monthlyCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.surfaceBorder, paddingVertical: 4, paddingHorizontal: Spacing.sm },
   monthlyHeaderRow: { flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder },
