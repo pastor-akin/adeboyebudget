@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity, Modal,
+  View, Text, StyleSheet, FlatList, TouchableOpacity,
   TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView,
   Platform, RefreshControl,
 } from 'react-native';
@@ -277,8 +277,13 @@ export default function ExpensesScreen() {
         <Ionicons name="add" size={28} color="#fff" />
       </TouchableOpacity>
 
-      {/* Add Expense Modal */}
-      <Modal visible={showAdd} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setShowAdd(false)}>
+      {/* Add Expense — a plain full-screen overlay instead of RN's <Modal>.
+          <Modal> renders in its own top-level layer on web, which sat above
+          the in-app dialog below and made warnings (like the duplicate-name
+          check) render invisibly behind it. A regular sibling view keeps
+          everything in one predictable stacking order. */}
+      {showAdd ? (
+      <View style={styles.modalRoot}>
         <KeyboardAvoidingView style={styles.modal} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <View style={styles.modalHandle} />
@@ -377,10 +382,12 @@ export default function ExpensesScreen() {
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
-      </Modal>
+      </View>
+      ) : null}
 
-      {/* New Category Modal */}
-      <Modal visible={showNewCat} animationType="slide" presentationStyle="formSheet" onRequestClose={() => setShowNewCat(false)}>
+      {/* New Category — same reasoning as above: plain overlay, not <Modal>. */}
+      {showNewCat ? (
+      <View style={styles.modalRoot}>
         <KeyboardAvoidingView style={styles.modal} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={styles.modalHandle} />
           <Text style={styles.modalTitle}>New Category</Text>
@@ -413,7 +420,8 @@ export default function ExpensesScreen() {
             </TouchableOpacity>
           </View>
         </KeyboardAvoidingView>
-      </Modal>
+      </View>
+      ) : null}
 
       {DialogOverlay}
     </SafeAreaView>
@@ -442,6 +450,7 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 17, fontWeight: '600', color: Colors.text },
   emptySubtext: { fontSize: 14, color: Colors.textSecondary, marginTop: 6 },
   fab: { position: 'absolute', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', shadowColor: Colors.primary, shadowOpacity: 0.5, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
+  modalRoot: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
   modal: { flex: 1, backgroundColor: Colors.background, paddingHorizontal: 20, paddingTop: 12 },
   modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: 20 },
   modalTitle: { fontSize: 22, fontWeight: '700', color: Colors.text, marginBottom: 20 },
