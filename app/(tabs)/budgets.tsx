@@ -21,7 +21,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import {
   supabase, AppCategory, BudgetLimit, Expense, Income,
-  getCategories, addCategory, renameCategory, deleteCategory, mergeCategory,
+  getCategories, addCategory, renameCategory, deleteCategory, mergeCategory, demoteCategory,
   getYearlyBudgets, upsertBudget, deleteBudget,
   distributeYearlyBudget, clearYearlyDistribution,
   getExpensesForYear, addExpense, deleteExpense, uploadReceipt,
@@ -321,7 +321,7 @@ export default function BudgetsScreen() {
 
   const removeCategory = (c: AppCategory) => {
     const msg = c.is_default
-      ? `Clear the ${yearKey} budget for "${c.name}"? It's a built-in category so it'll stay in the list with no limit set. Past expense history stays intact.`
+      ? `Clear the ${yearKey} budget for "${c.name}"? It's a built-in category so it'll stay in the list with no limit set. Past expense history stays intact. (Want it gone from the list entirely instead? Tap "Remove as Default" first, then Delete.)`
       : `Delete "${c.name}" and its ${yearKey} budget? Past expense history stays intact. This can't be undone.`;
     AlertConfirm('Delete Category', msg, async () => {
       try {
@@ -333,6 +333,28 @@ export default function BudgetsScreen() {
         Alert('Error', e.message ?? 'Could not delete this category.');
       }
     });
+  };
+
+  // Strips a built-in category's "default" status so it becomes a normal,
+  // fully-deletable/mergeable custom category. Works for any of the 17
+  // seeded defaults (Coffee, Eating Out, etc.), not just one — after this,
+  // the regular Delete/Merge actions on this category behave exactly like
+  // they do for any category you created yourself.
+  const removeDefaultStatus = (c: AppCategory) => {
+    AlertConfirm(
+      'Remove as Default',
+      `"${c.name}" is one of the app's built-in categories, which is why it can't be fully deleted or merged away. Removing its default status turns it into a regular category — after that you can delete or merge it like any other. Its budget and expense history are untouched either way.`,
+      async () => {
+        try {
+          await demoteCategory(c.name);
+          load();
+          Alert('Done', `"${c.name}" is no longer a default category — you can now delete or merge it normally.`);
+        } catch (e: any) {
+          Alert('Error', e.message ?? 'Could not update this category.');
+        }
+      },
+      'Remove as Default',
+    );
   };
 
   // ── Expenses drill-down ────────────────────────────────────────────────
@@ -903,6 +925,12 @@ export default function BudgetsScreen() {
                         <MaterialIcons name="call-merge" size={15} color={Colors.primary} />
                         <Text style={styles.expandedActionText}>Merge</Text>
                       </Pressable>
+                      {c.is_default ? (
+                        <Pressable style={styles.expandedActionBtn} onPress={() => removeDefaultStatus(c)}>
+                          <MaterialIcons name="remove-circle-outline" size={15} color={Colors.primary} />
+                          <Text style={styles.expandedActionText}>Remove as Default</Text>
+                        </Pressable>
+                      ) : null}
                       <Pressable style={[styles.expandedActionBtn, { borderColor: '#EF444440' }]} onPress={() => removeCategory(c)}>
                         <MaterialIcons name="delete-outline" size={15} color="#EF4444" />
                         <Text style={[styles.expandedActionText, { color: '#EF4444' }]}>Delete</Text>

@@ -114,6 +114,25 @@ export async function deleteCategory(name: string): Promise<void> {
 }
 
 /**
+ * Strips a category's "built-in" status (is_default → false) without
+ * touching anything else about it — its budget, its expense history, its
+ * emoji/color all stay exactly as they are. Once demoted, the category
+ * behaves like any custom one: it can be fully deleted (not just cleared)
+ * and it can be the source of a merge that actually removes it. Any of the
+ * 17 seeded defaults (Coffee, Eating Out, etc.) can be demoted this way —
+ * it's a one-way trip; there's no promote-back-to-default action, since a
+ * user who wants a category gone doesn't need it to come back as "built-in."
+ */
+export async function demoteCategory(name: string): Promise<void> {
+  const { error } = await supabase
+    .from('budget_categories')
+    .update({ is_default: false })
+    .eq('name', name)
+    .eq('is_default', true);
+  if (error) throw error;
+}
+
+/**
  * Renames a custom category and cascades the new name onto every
  * budget_limits and budget_expenses row that referenced the old name (those
  * tables store the category as a plain string, not a foreign key, so the
