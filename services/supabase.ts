@@ -153,7 +153,7 @@ export async function renameCategory(oldName: string, newName: string): Promise<
  * the normal delete behavior). Use this to fix an accidental duplicate
  * category (e.g. two "Eating Out" entries) without losing any history.
  */
-export async function mergeCategory(fromName: string, intoName: string): Promise<void> {
+export async function mergeCategory(fromName: string, intoName: string): Promise<{ expensesMoved: number; categoryRemoved: boolean }> {
   // Deliberately NOT trimmed: these must match the exact category strings as
   // stored in the database (the whole point of merging is often to fix a
   // duplicate that differs only by leading/trailing whitespace, e.g.
@@ -161,12 +161,16 @@ export async function mergeCategory(fromName: string, intoName: string): Promise
   // categories compare equal and silently no-op instead of merging them.
   const from = fromName;
   const into = intoName;
-  if (!from || !into || from === into) return;
+  if (!from || !into || from === into) return { expensesMoved: 0, categoryRemoved: false };
 
-  const { error: expError } = await supabase
+  // .select('id') so we get back exactly which/how many rows matched — lets
+  // the caller show a real "moved N expenses" confirmation instead of
+  // silently succeeding (or silently matching nothing) with no feedback.
+  const { data: movedExpenses, error: expError } = await supabase
     .from('budget_expenses')
     .update({ category: into })
-    .eq('category', from);
+    .eq('category', from)
+    .select('id');
   if (expError) throw expError;
 
   const [{ data: fromLimits, error: flError }, { data: intoLimits, error: ilError }] = await Promise.all([
@@ -194,12 +198,20 @@ export async function mergeCategory(fromName: string, intoName: string): Promise
     .eq('category', from);
   if (delLimitsError) throw delLimitsError;
 
-  const { error: delCatError } = await supabase
+  // Only a custom (non-default) category actually gets removed here — same
+  // rule as the regular delete flow, since a default category always stays
+  // in the list. .select('id') tells us whether that's what happened, so a
+  // merge involving a default category can say so instead of just going
+  // quiet about it.
+  const { data: deletedCats, error: delCatError } = await supabase
     .from('budget_categories')
     .delete()
     .eq('name', from)
-    .eq('is_default', false);
+    .eq('is_default', false)
+    .select('id');
   if (delCatError) throw delCatError;
+
+  return { expensesMoved: (movedExpenses ?? []).length, categoryRemoved: (deletedCats ?? []).length > 0 };
 }
 
 // ─── Expenses ────────────────────────────────────────────────────────────────

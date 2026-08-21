@@ -292,9 +292,20 @@ export default function BudgetsScreen() {
       async () => {
         setBusy(true);
         try {
-          await mergeCategory(from.name, target.name);
+          const result = await mergeCategory(from.name, target.name);
           setExpandedCategory(null);
           load();
+          if (result.expensesMoved === 0 && !result.categoryRemoved) {
+            Alert(
+              'Nothing Merged',
+              `No expenses or budget were found under "${from.name}", and it wasn't removed. This usually means "${from.name}" and "${target.name}" don't match exactly as stored — there may be a hidden character or extra space in one of the names. Try editing "${from.name}" (tap Edit) and retyping its name from scratch before merging again.`,
+            );
+          } else {
+            Alert(
+              'Merged',
+              `Moved ${result.expensesMoved} expense${result.expensesMoved === 1 ? '' : 's'} from "${from.name}" into "${target.name}"${result.categoryRemoved ? `, and removed "${from.name}"` : ` (kept "${from.name}" in the list since it's a default category — just cleared out)`}.`,
+            );
+          }
         } catch (e: any) {
           Alert('Error', e.message ?? 'Could not merge these categories.');
         } finally {
