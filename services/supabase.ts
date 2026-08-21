@@ -154,8 +154,13 @@ export async function renameCategory(oldName: string, newName: string): Promise<
  * category (e.g. two "Eating Out" entries) without losing any history.
  */
 export async function mergeCategory(fromName: string, intoName: string): Promise<void> {
-  const from = fromName.trim();
-  const into = intoName.trim();
+  // Deliberately NOT trimmed: these must match the exact category strings as
+  // stored in the database (the whole point of merging is often to fix a
+  // duplicate that differs only by leading/trailing whitespace, e.g.
+  // "Eating Out" vs "Eating Out "). Trimming here would make two such
+  // categories compare equal and silently no-op instead of merging them.
+  const from = fromName;
+  const into = intoName;
   if (!from || !into || from === into) return;
 
   const { error: expError } = await supabase
