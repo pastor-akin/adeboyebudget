@@ -301,7 +301,7 @@ export default function BudgetsScreen() {
           if (result.expensesMoved === 0 && !result.categoryRemoved) {
             Alert(
               'Nothing Merged',
-              `No expenses or budget were found under "${from.name}", and it wasn't removed. This usually means "${from.name}" and "${target.name}" don't match exactly as stored — there may be a hidden character or extra space in one of the names. Try editing "${from.name}" (tap Edit) and retyping its name from scratch before merging again.`,
+              `No expenses or budget were found under "${from.name}", and it wasn't removed. It looks like this category genuinely has no history yet — if you believe it should, try again in a moment or check the Expenses tab.`,
             );
           } else {
             Alert(

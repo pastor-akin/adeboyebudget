@@ -153,36 +153,50 @@ export async function renameCategory(oldName: string, newName: string): Promise<
  * the normal delete behavior). Use this to fix an accidental duplicate
  * category (e.g. two "Eating Out" entries) without losing any history.
  */
+// Normalizes a category name for comparison only (never for writing back):
+// collapses Unicode look-alikes to one form, trims, and folds internal
+// whitespace runs to a single space, then lowercases. Matching this way
+// instead of a literal `.eq('category', from)` is what makes merge actually
+// find rows for a category name that has picked up an invisible character,
+// stray whitespace, or case drift over time (e.g. a direct DB edit) — a
+// plain string-equality filter (even a trimmed one) silently matches
+// nothing in that case, which is the "Nothing Merged" failure this replaces.
+function normalizeCategoryName(s: string): string {
+  return s.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 export async function mergeCategory(fromName: string, intoName: string): Promise<{ expensesMoved: number; categoryRemoved: boolean }> {
-  // Deliberately NOT trimmed: these must match the exact category strings as
-  // stored in the database (the whole point of merging is often to fix a
-  // duplicate that differs only by leading/trailing whitespace, e.g.
-  // "Eating Out" vs "Eating Out "). Trimming here would make two such
-  // categories compare equal and silently no-op instead of merging them.
   const from = fromName;
   const into = intoName;
-  if (!from || !into || from === into) return { expensesMoved: 0, categoryRemoved: false };
+  const fromKey = normalizeCategoryName(from);
+  const intoKey = normalizeCategoryName(into);
+  if (!from || !into || fromKey === intoKey) return { expensesMoved: 0, categoryRemoved: false };
 
-  // .select('id') so we get back exactly which/how many rows matched — lets
-  // the caller show a real "moved N expenses" confirmation instead of
-  // silently succeeding (or silently matching nothing) with no feedback.
-  const { data: movedExpenses, error: expError } = await supabase
+  // Fetch everything and match client-side by normalized name, then act on
+  // the exact rows found (by id) — this is robust to whatever byte-level
+  // drift exists between how `from` is spelled and how it's actually stored.
+  const { data: allExpenses, error: expFetchError } = await supabase
     .from('budget_expenses')
-    .update({ category: into })
-    .eq('category', from)
-    .select('id');
-  if (expError) throw expError;
+    .select('id, category');
+  if (expFetchError) throw expFetchError;
+  const expenseIds = (allExpenses ?? [])
+    .filter(e => normalizeCategoryName(e.category) === fromKey)
+    .map(e => e.id);
+  if (expenseIds.length > 0) {
+    const { error: expError } = await supabase
+      .from('budget_expenses')
+      .update({ category: into })
+      .in('id', expenseIds);
+    if (expError) throw expError;
+  }
 
-  const [{ data: fromLimits, error: flError }, { data: intoLimits, error: ilError }] = await Promise.all([
-    supabase.from('budget_limits').select('*').eq('category', from),
-    supabase.from('budget_limits').select('*').eq('category', into),
-  ]);
-  if (flError) throw flError;
-  if (ilError) throw ilError;
+  const { data: allLimits, error: limFetchError } = await supabase.from('budget_limits').select('*');
+  if (limFetchError) throw limFetchError;
+  const fromLimits = (allLimits ?? []).filter(l => normalizeCategoryName(l.category) === fromKey);
+  const intoLimits = (allLimits ?? []).filter(l => normalizeCategoryName(l.category) === intoKey);
+  const intoByMonth = new Map(intoLimits.map(l => [l.month, l]));
 
-  const intoByMonth = new Map((intoLimits ?? []).map(l => [l.month, l]));
-
-  for (const fl of fromLimits ?? []) {
+  for (const fl of fromLimits) {
     const existing = intoByMonth.get(fl.month);
     const amount = existing ? Number(existing.amount) + Number(fl.amount) : Number(fl.amount);
     const { error } = await supabase.from('budget_limits').upsert(
@@ -192,26 +206,36 @@ export async function mergeCategory(fromName: string, intoName: string): Promise
     if (error) throw error;
   }
 
-  const { error: delLimitsError } = await supabase
-    .from('budget_limits')
-    .delete()
-    .eq('category', from);
-  if (delLimitsError) throw delLimitsError;
+  if (fromLimits.length > 0) {
+    const { error: delLimitsError } = await supabase
+      .from('budget_limits')
+      .delete()
+      .in('id', fromLimits.map(l => l.id));
+    if (delLimitsError) throw delLimitsError;
+  }
 
   // Only a custom (non-default) category actually gets removed here — same
   // rule as the regular delete flow, since a default category always stays
-  // in the list. .select('id') tells us whether that's what happened, so a
-  // merge involving a default category can say so instead of just going
-  // quiet about it.
-  const { data: deletedCats, error: delCatError } = await supabase
+  // in the list. Matched by normalized name too, and deleted by id so a
+  // stray character in the stored name can't make this silently no-op.
+  const { data: customCats, error: catFetchError } = await supabase
     .from('budget_categories')
-    .delete()
-    .eq('name', from)
-    .eq('is_default', false)
-    .select('id');
-  if (delCatError) throw delCatError;
+    .select('id, name')
+    .eq('is_default', false);
+  if (catFetchError) throw catFetchError;
+  const matchedCat = (customCats ?? []).find(c => normalizeCategoryName(c.name) === fromKey);
 
-  return { expensesMoved: (movedExpenses ?? []).length, categoryRemoved: (deletedCats ?? []).length > 0 };
+  let categoryRemoved = false;
+  if (matchedCat) {
+    const { error: delCatError } = await supabase
+      .from('budget_categories')
+      .delete()
+      .eq('id', matchedCat.id);
+    if (delCatError) throw delCatError;
+    categoryRemoved = true;
+  }
+
+  return { expensesMoved: expenseIds.length, categoryRemoved };
 }
 
 // ─── Expenses ────────────────────────────────────────────────────────────────
