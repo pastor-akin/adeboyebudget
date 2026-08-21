@@ -12,7 +12,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, TextInput,
-  KeyboardAvoidingView, Platform, UIManager, LayoutAnimation, ActivityIndicator, Image, Share, Alert as RNAlert,
+  KeyboardAvoidingView, Platform, UIManager, LayoutAnimation, ActivityIndicator, Image, Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -105,6 +105,42 @@ export default function BudgetsScreen() {
   const [incSource, setIncSource] = useState('');
   const [incDate, setIncDate] = useState(todayStr());
   const [showNameSuggestions, setShowNameSuggestions] = useState(false);
+
+  // In-app confirm/info dialog — replaces RN's Alert.alert, which silently
+  // no-ops on web (react-native-web doesn't implement it), so anything that
+  // relied on Alert.alert for a confirm step (like Merge or Delete) looked
+  // like it did nothing when used from a browser.
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; onConfirm: () => void } | null>(null);
+  const [infoDialog, setInfoDialog] = useState<{ title: string; message: string } | null>(null);
+  const Alert = (title: string, message?: string) => setInfoDialog({ title, message: message ?? '' });
+  const AlertConfirm = (title: string, message: string, onConfirm: () => void, confirmLabel: string = 'Delete') =>
+    setConfirmDialog({ title, message, confirmLabel, onConfirm });
+
+  const DialogOverlay = confirmDialog || infoDialog ? (
+    <View style={styles.sheetOverlay}>
+      <View style={styles.sheet}>
+        <Text style={styles.sheetTitle}>{(confirmDialog ?? infoDialog)!.title}</Text>
+        <Text style={styles.dialogMessage}>{(confirmDialog ?? infoDialog)!.message}</Text>
+        {confirmDialog ? (
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 16 }}>
+            <Pressable style={[styles.cancelBtn, { flex: 1 }]} onPress={() => setConfirmDialog(null)}>
+              <Text style={styles.cancelBtnText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.saveBtn, { flex: 1 }, confirmDialog.confirmLabel === 'Delete' && styles.deleteBtn]}
+              onPress={() => { const fn = confirmDialog.onConfirm; setConfirmDialog(null); fn(); }}
+            >
+              <Text style={styles.submitText}>{confirmDialog.confirmLabel}</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable style={[styles.saveBtn, { marginTop: 16 }]} onPress={() => setInfoDialog(null)}>
+            <Text style={styles.submitText}>OK</Text>
+          </Pressable>
+        )}
+      </View>
+    </View>
+  ) : null;
 
   React.useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
@@ -200,9 +236,24 @@ export default function BudgetsScreen() {
     if (!catName.trim()) { Alert('Name Required', 'Give the category a name.'); return; }
     const planned = parseFloat(catPlanned || '0');
     if (isNaN(planned) || planned < 0) { Alert('Invalid Amount', 'Enter a valid planned amount.'); return; }
+
+    const finalName = catName.trim();
+    // Warn on a near-duplicate (same name, different case/spacing) instead of
+    // silently creating a second category — this is what let "Eating Out"
+    // and "eating out" both get created before.
+    const duplicate = categories.find(
+      c => c.name.trim().toLowerCase() === finalName.toLowerCase() && c.name !== editingCatOriginalName,
+    );
+    if (duplicate) {
+      Alert(
+        'Category Already Exists',
+        `"${duplicate.name}" is already a category. Tap it in the list instead of adding another one — or if you've already created a duplicate by mistake, expand it and use Merge to combine them.`,
+      );
+      return;
+    }
+
     setBusy(true);
     try {
-      const finalName = catName.trim();
       if (editingCatOriginalName) {
         if (finalName !== editingCatOriginalName) await renameCategory(editingCatOriginalName, finalName);
       } else {
@@ -233,14 +284,15 @@ export default function BudgetsScreen() {
 
   const performMerge = (target: AppCategory) => {
     if (!mergeSource) return;
+    const from = mergeSource;
+    setMergeSource(null); // close the picker sheet first so it doesn't stack under the confirm dialog
     AlertConfirm(
       'Merge Categories',
-      `Move every expense and budget from "${mergeSource.name}" into "${target.name}"? "${mergeSource.name}" will be removed and its history will live under "${target.name}" instead. This can't be undone.`,
+      `Move every expense and budget from "${from.name}" into "${target.name}"? "${from.name}" will be removed and its history will live under "${target.name}" instead. This can't be undone.`,
       async () => {
         setBusy(true);
         try {
-          await mergeCategory(mergeSource.name, target.name);
-          setMergeSource(null);
+          await mergeCategory(from.name, target.name);
           setExpandedCategory(null);
           load();
         } catch (e: any) {
@@ -441,6 +493,7 @@ export default function BudgetsScreen() {
             </View>
           ) : null}
           {busy && !showExpForm ? <View style={styles.busyOverlay}><ActivityIndicator size="large" color={Colors.primary} /></View> : null}
+          {DialogOverlay}
         </SafeAreaView>
       </KeyboardAvoidingView>
     );
@@ -561,6 +614,7 @@ export default function BudgetsScreen() {
             ) : null}
           </ScrollView>
         )}
+        {DialogOverlay}
       </SafeAreaView>
     );
   }
@@ -652,6 +706,7 @@ export default function BudgetsScreen() {
             </View>
           ) : null}
           {busy && !showIncForm ? <View style={styles.busyOverlay}><ActivityIndicator size="large" color={Colors.primary} /></View> : null}
+          {DialogOverlay}
         </SafeAreaView>
       </KeyboardAvoidingView>
     );
@@ -834,20 +889,15 @@ export default function BudgetsScreen() {
         </KeyboardAvoidingView>
       ) : null}
       {busy && !showCatForm ? <View style={styles.busyOverlay}><ActivityIndicator size="large" color={Colors.primary} /></View> : null}
+      {DialogOverlay}
     </SafeAreaView>
   );
 }
 
-// Thin wrappers so this file's call sites read like Palace's `showAlert`.
-function Alert(title: string, message?: string) {
-  RNAlert.alert(title, message);
-}
-function AlertConfirm(title: string, message: string, onConfirm: () => void, confirmLabel: string = 'Delete') {
-  RNAlert.alert(title, message, [
-    { text: 'Cancel', style: 'cancel' },
-    { text: confirmLabel, style: confirmLabel === 'Delete' ? 'destructive' : 'default', onPress: onConfirm },
-  ]);
-}
+// Note: Alert/AlertConfirm are now defined inside BudgetsScreen (driving the
+// in-app DialogOverlay) instead of here, since RNAlert.alert doesn't render
+// anything on web. RNAlert is kept imported only where still genuinely
+// native-only (there is currently no remaining use in this file).
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
@@ -949,6 +999,8 @@ const styles = StyleSheet.create({
   cancelBtnText: { ...Typography.button, color: Colors.textSecondary },
   saveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14, ...Shadow.glow },
   submitText: { ...Typography.button, color: '#fff' },
+  deleteBtn: { backgroundColor: '#EF4444', shadowColor: '#EF4444' },
+  dialogMessage: { ...Typography.body, color: Colors.textSecondary, fontSize: 13.5, lineHeight: 19, marginTop: 4 },
   receiptPickRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 14 },
   receiptPickText: { ...Typography.label, color: Colors.primary, fontWeight: '700' },
   receiptPreview: { width: '100%', height: 140, borderRadius: Radius.md, marginTop: 10 },
