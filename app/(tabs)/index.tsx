@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity, Modal,
-  TextInput, ScrollView, Alert, ActivityIndicator, KeyboardAvoidingView,
+  TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView,
   Platform, RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -42,6 +42,17 @@ export default function ExpensesScreen() {
   const [newCatColor, setNewCatColor] = useState(COLOR_OPTIONS[0]);
   const [savingCat, setSavingCat] = useState(false);
 
+  // In-app confirm/info dialog. React Native's Alert.alert silently does
+  // nothing on web (react-native-web doesn't implement it), so every confirm
+  // step here — deleting an expense, choosing a receipt source, error
+  // messages — used to just fail quietly when this screen was opened in a
+  // browser. This dialog works identically on native and web.
+  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; onConfirm: () => void } | null>(null);
+  const [infoDialog, setInfoDialog] = useState<{ title: string; message?: string } | null>(null);
+  const showAlert = (title: string, message?: string) => setInfoDialog({ title, message });
+  const showConfirm = (title: string, message: string, onConfirm: () => void, confirmLabel: string = 'Delete') =>
+    setConfirmDialog({ title, message, confirmLabel, onConfirm });
+
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => {
       setUserName(user?.email?.split('@')[0] ?? 'You');
@@ -53,7 +64,7 @@ export default function ExpensesScreen() {
       const data = await getExpenses(monthKey);
       setExpenses(data);
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      showAlert('Error', e.message);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -97,6 +108,7 @@ export default function ExpensesScreen() {
   const enteredAmount = parseFloat(amount) || 0;
   const remaining = remainingFor(category);
   const isOverBudget = remaining !== null && enteredAmount > remaining;
+  const selectedCat = categories.find(c => c.name === category);
 
   function changeMonth(delta: number) {
     const [year, mon] = monthKey.split('-').map(Number);
@@ -105,75 +117,107 @@ export default function ExpensesScreen() {
 
   async function pickReceipt() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') { Alert.alert('Permission needed', 'Allow photo access.'); return; }
+    if (status !== 'granted') { showAlert('Permission needed', 'Allow photo access.'); return; }
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7, allowsEditing: true });
     if (!result.canceled) setReceiptUri(result.assets[0].uri);
   }
 
   async function takeReceiptPhoto() {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') { Alert.alert('Permission needed', 'Allow camera access.'); return; }
+    if (status !== 'granted') { showAlert('Permission needed', 'Allow camera access.'); return; }
     const result = await ImagePicker.launchCameraAsync({ quality: 0.7, allowsEditing: true });
     if (!result.canceled) setReceiptUri(result.assets[0].uri);
   }
 
-  function promptReceiptSource() {
-    Alert.alert('Add Receipt', undefined, [
-      { text: 'Camera', onPress: takeReceiptPhoto },
-      { text: 'Photo Library', onPress: pickReceipt },
-      { text: 'Cancel', style: 'cancel' },
-    ]);
-  }
-
   async function handleAdd() {
     const num = parseFloat(amount);
-    if (!amount || isNaN(num) || num <= 0) { Alert.alert('Invalid amount', 'Enter a valid dollar amount.'); return; }
+    if (!amount || isNaN(num) || num <= 0) { showAlert('Invalid amount', 'Enter a valid dollar amount.'); return; }
     setSaving(true);
     try {
       let receipt_url: string | undefined;
       if (receiptUri) receipt_url = await uploadReceipt(receiptUri);
       await addExpense({ date, amount: num, category, note: note.trim() || undefined, added_by_name: userName, receipt_url });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       setShowAdd(false);
       setAmount(''); setNote(''); setReceiptUri(null);
       setDate(new Date().toISOString().split('T')[0]);
       load();
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      showAlert('Error', e.message);
     } finally {
       setSaving(false);
     }
   }
 
-  async function handleDelete(expense: Expense) {
-    Alert.alert('Delete expense?', `$${expense.amount.toFixed(2)} · ${expense.category}`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-        try { await deleteExpense(expense.id); Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); load(); }
-        catch (e: any) { Alert.alert('Error', e.message); }
-      }},
-    ]);
+  function handleDelete(expense: Expense) {
+    showConfirm(
+      'Delete expense?',
+      `$${expense.amount.toFixed(2)} · ${expense.category}${expense.note ? ` · ${expense.note}` : ''}`,
+      async () => {
+        try {
+          await deleteExpense(expense.id);
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+          load();
+        } catch (e: any) {
+          showAlert('Error', e.message);
+        }
+      },
+    );
   }
 
   async function handleAddCategory() {
-    if (!newCatName.trim()) { Alert.alert('Name required', 'Enter a category name.'); return; }
+    if (!newCatName.trim()) { showAlert('Name required', 'Enter a category name.'); return; }
+    const trimmed = newCatName.trim();
+    const duplicate = categories.find(c => c.name.trim().toLowerCase() === trimmed.toLowerCase());
+    if (duplicate) {
+      showAlert('Category already exists', `"${duplicate.name}" is already in your list — pick it below instead of adding a duplicate.`);
+      return;
+    }
     setSavingCat(true);
     try {
-      await addCategory(newCatName.trim(), newCatEmoji, newCatColor);
+      await addCategory(trimmed, newCatEmoji, newCatColor);
       const cats = await getCategories();
       setCategories(cats);
-      setCategory(newCatName.trim());
+      setCategory(trimmed);
       setShowNewCat(false);
       setNewCatName(''); setNewCatEmoji('📦'); setNewCatColor(COLOR_OPTIONS[0]);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      showAlert('Error', e.message);
     } finally {
       setSavingCat(false);
     }
   }
 
   const total = expenses.reduce((sum, e) => sum + e.amount, 0);
+
+  const DialogOverlay = confirmDialog || infoDialog ? (
+    <View style={styles.dialogOverlay}>
+      <View style={styles.dialogBox}>
+        <Text style={styles.modalTitle}>{(confirmDialog ?? infoDialog)!.title}</Text>
+        {(confirmDialog ?? infoDialog)!.message ? (
+          <Text style={styles.dialogMessage}>{(confirmDialog ?? infoDialog)!.message}</Text>
+        ) : null}
+        {confirmDialog ? (
+          <View style={[styles.modalActions, { marginBottom: 0 }]}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setConfirmDialog(null)}>
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.saveBtn, confirmDialog.confirmLabel === 'Delete' && styles.dangerBtn]}
+              onPress={() => { const fn = confirmDialog.onConfirm; setConfirmDialog(null); fn(); }}
+            >
+              <Text style={styles.saveText}>{confirmDialog.confirmLabel}</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity style={[styles.saveBtn, { marginTop: 4 }]} onPress={() => setInfoDialog(null)}>
+            <Text style={styles.saveText}>OK</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  ) : null;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -208,21 +252,22 @@ export default function ExpensesScreen() {
           renderItem={({ item }) => {
             const cat = categories.find(c => c.name === item.category);
             return (
-              <TouchableOpacity style={styles.row} onLongPress={() => handleDelete(item)} activeOpacity={0.7}>
+              <View style={styles.row}>
                 <View style={[styles.catDot, { backgroundColor: cat?.color ?? Colors.surfaceHigh }]}>
                   <Text style={styles.catEmoji}>{cat?.emoji ?? '📦'}</Text>
                 </View>
                 <View style={styles.rowInfo}>
-                  <Text style={styles.rowCategory}>{item.category}</Text>
-                  <Text style={styles.rowMeta}>
+                  <Text style={styles.rowCategory} numberOfLines={1}>{item.category}</Text>
+                  <Text style={styles.rowMeta} numberOfLines={1}>
                     {item.date}{item.added_by_name ? ` · ${item.added_by_name}` : ''}{item.note ? ` · ${item.note}` : ''}
                   </Text>
                 </View>
-                <View style={styles.rowRight}>
-                  <Text style={styles.rowAmount}>${item.amount.toFixed(2)}</Text>
-                  {item.receipt_url && <Image source={{ uri: item.receipt_url }} style={styles.receiptThumb} contentFit="cover" />}
-                </View>
-              </TouchableOpacity>
+                {item.receipt_url && <Image source={{ uri: item.receipt_url }} style={styles.receiptThumb} contentFit="cover" />}
+                <Text style={styles.rowAmount}>${item.amount.toFixed(2)}</Text>
+                <TouchableOpacity style={styles.rowDeleteBtn} onPress={() => handleDelete(item)} hitSlop={8}>
+                  <Ionicons name="trash-outline" size={16} color={Colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
             );
           }}
         />
@@ -249,71 +294,53 @@ export default function ExpensesScreen() {
               keyboardType="decimal-pad"
               autoFocus
             />
-            {isOverBudget && remaining !== null && (
-              <Text style={styles.overBudgetWarning}>
-                ⚠️ Over budget by ${(enteredAmount - remaining).toFixed(2)} — only ${remaining.toFixed(2)} left in {category}
-              </Text>
-            )}
 
             <Text style={styles.label}>Category</Text>
             {modalLoading ? (
-              <ActivityIndicator color={Colors.primary} style={{ marginBottom: 20 }} />
+              <ActivityIndicator color={Colors.primary} style={{ marginBottom: 16 }} />
             ) : (
-              <View style={styles.catGrid}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow} contentContainerStyle={{ gap: 8, paddingRight: 8 }}>
                 {categories.map(cat => {
-                  const rem = remainingFor(cat.name);
-                  const spent = spentFor(cat.name);
-                  const limit = budgetFor(cat.name);
-                  const isOver = rem !== null && rem < 0;
                   const isSelected = category === cat.name;
                   return (
                     <TouchableOpacity
                       key={cat.name}
-                      style={[
-                        styles.catCard,
-                        isSelected && { borderColor: cat.color, borderWidth: 2, backgroundColor: cat.color + '22' },
-                      ]}
+                      style={[styles.chip, isSelected && { borderColor: cat.color, backgroundColor: cat.color + '22' }]}
                       onPress={() => setCategory(cat.name)}
                       activeOpacity={0.75}
                     >
-                      <Text style={styles.catCardEmoji}>{cat.emoji}</Text>
-                      <Text style={[styles.catCardName, isSelected && { color: cat.color }]} numberOfLines={1}>{cat.name}</Text>
-                      {limit > 0 ? (
-                        <Text style={[styles.catCardBalance, isOver && styles.catCardBalanceOver]}>
-                          {isOver ? `Over $${Math.abs(rem!).toFixed(0)}` : `$${rem!.toFixed(0)} left`}
-                        </Text>
-                      ) : (
-                        <Text style={styles.catCardNoLimit}>${spent.toFixed(0)} spent</Text>
-                      )}
+                      <Text style={styles.chipEmoji}>{cat.emoji}</Text>
+                      <Text style={[styles.chipName, isSelected && { color: cat.color }]} numberOfLines={1}>{cat.name}</Text>
                     </TouchableOpacity>
                   );
                 })}
-                <TouchableOpacity style={[styles.catCard, styles.catCardAdd]} onPress={() => setShowNewCat(true)}>
-                  <Ionicons name="add-circle-outline" size={24} color={Colors.textSecondary} />
-                  <Text style={styles.catCardAddText}>New{'\n'}Category</Text>
+                <TouchableOpacity style={[styles.chip, styles.chipAdd]} onPress={() => setShowNewCat(true)}>
+                  <Ionicons name="add" size={16} color={Colors.textSecondary} />
+                  <Text style={styles.chipAddText}>New</Text>
                 </TouchableOpacity>
-              </View>
+              </ScrollView>
             )}
 
-            {(() => {
-              const rem = remainingFor(category);
-              const limit = budgetFor(category);
-              const spent = spentFor(category);
-              const cat = categories.find(c => c.name === category);
-              if (limit <= 0 || !cat) return null;
-              const isOver = rem! < 0;
-              return (
-                <View style={[styles.balanceCallout, isOver && styles.balanceCalloutOver]}>
-                  <Ionicons name={isOver ? 'warning-outline' : 'wallet-outline'} size={16} color={isOver ? Colors.error : Colors.primary} style={{ marginRight: 6 }} />
-                  <Text style={[styles.balanceCalloutText, isOver && { color: Colors.error }]}>
-                    {cat.emoji} {category}: ${spent.toFixed(2)} of ${limit.toFixed(2)}
-                    {isOver ? ` · Over by $${Math.abs(rem!).toFixed(2)}` : ` · $${rem!.toFixed(2)} remaining`}
-                  </Text>
-                </View>
-              );
-            })()}
+            {/* One place for budget status — instead of showing spent/remaining
+                on every category chip (the old grid), only the selected
+                category's balance is shown here, right below the amount
+                you're about to log against it. */}
+            {selectedCat && remaining !== null ? (
+              <View style={[styles.balanceCallout, remaining < 0 && styles.balanceCalloutOver]}>
+                <Ionicons name={remaining < 0 ? 'warning-outline' : 'wallet-outline'} size={16} color={remaining < 0 ? Colors.error : Colors.primary} style={{ marginRight: 6 }} />
+                <Text style={[styles.balanceCalloutText, remaining < 0 && { color: Colors.error }]}>
+                  {selectedCat.emoji} {category}: ${spentFor(category).toFixed(2)} of ${budgetFor(category).toFixed(2)} this month
+                  {remaining < 0 ? ` · Over by $${Math.abs(remaining).toFixed(2)}` : ` · $${remaining.toFixed(2)} left`}
+                </Text>
+              </View>
+            ) : null}
+            {isOverBudget && remaining !== null && (
+              <Text style={styles.overBudgetWarning}>
+                ⚠️ This ${enteredAmount.toFixed(2)} would put you ${(enteredAmount - remaining).toFixed(2)} over budget in {category}
+              </Text>
+            )}
 
-            <Text style={[styles.label, { marginTop: 8 }]}>Date</Text>
+            <Text style={styles.label}>Date</Text>
             <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textSecondary} />
 
             <Text style={styles.label}>Note (optional)</Text>
@@ -328,10 +355,16 @@ export default function ExpensesScreen() {
                 </TouchableOpacity>
               </View>
             ) : (
-              <TouchableOpacity style={styles.receiptBtn} onPress={promptReceiptSource}>
-                <Ionicons name="camera-outline" size={20} color={Colors.textSecondary} style={{ marginRight: 8 }} />
-                <Text style={styles.receiptBtnText}>Attach receipt photo</Text>
-              </TouchableOpacity>
+              <View style={styles.receiptBtnRow}>
+                <TouchableOpacity style={styles.receiptBtn} onPress={takeReceiptPhoto}>
+                  <Ionicons name="camera-outline" size={18} color={Colors.textSecondary} style={{ marginRight: 6 }} />
+                  <Text style={styles.receiptBtnText}>Camera</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.receiptBtn} onPress={pickReceipt}>
+                  <Ionicons name="image-outline" size={18} color={Colors.textSecondary} style={{ marginRight: 6 }} />
+                  <Text style={styles.receiptBtnText}>Library</Text>
+                </TouchableOpacity>
+              </View>
             )}
 
             <View style={styles.modalActions}>
@@ -381,6 +414,8 @@ export default function ExpensesScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {DialogOverlay}
     </SafeAreaView>
   );
 }
@@ -392,15 +427,15 @@ const styles = StyleSheet.create({
   headerCenter: { alignItems: 'center' },
   monthLabel: { fontSize: 17, fontWeight: '700', color: Colors.text },
   totalLabel: { fontSize: 13, color: Colors.primary, marginTop: 2 },
-  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  catDot: { width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  catEmoji: { fontSize: 20 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border, gap: 10 },
+  catDot: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
+  catEmoji: { fontSize: 18 },
   rowInfo: { flex: 1 },
-  rowCategory: { fontSize: 15, fontWeight: '600', color: Colors.text },
-  rowMeta: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
-  rowRight: { alignItems: 'flex-end', gap: 4 },
-  rowAmount: { fontSize: 16, fontWeight: '700', color: Colors.text },
-  receiptThumb: { width: 32, height: 32, borderRadius: 6 },
+  rowCategory: { fontSize: 14.5, fontWeight: '600', color: Colors.text },
+  rowMeta: { fontSize: 11.5, color: Colors.textSecondary, marginTop: 2 },
+  rowAmount: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  rowDeleteBtn: { padding: 4 },
+  receiptThumb: { width: 28, height: 28, borderRadius: 6 },
   empty: { flex: 1 },
   emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 100 },
   emptyEmoji: { fontSize: 48, marginBottom: 12 },
@@ -410,25 +445,26 @@ const styles = StyleSheet.create({
   modal: { flex: 1, backgroundColor: Colors.background, paddingHorizontal: 20, paddingTop: 12 },
   modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: 20 },
   modalTitle: { fontSize: 22, fontWeight: '700', color: Colors.text, marginBottom: 20 },
-  label: { fontSize: 12, fontWeight: '700', color: Colors.textSecondary, marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.8 },
-  amountInput: { fontSize: 36, fontWeight: '700', color: Colors.text, backgroundColor: Colors.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 16, marginBottom: 8, borderWidth: 2, borderColor: 'transparent' },
+  label: { fontSize: 12, fontWeight: '700', color: Colors.textSecondary, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.8 },
+  amountInput: { fontSize: 36, fontWeight: '700', color: Colors.text, backgroundColor: Colors.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 16, marginBottom: 20, borderWidth: 2, borderColor: 'transparent' },
   amountInputOver: { borderColor: Colors.error, color: Colors.error },
-  overBudgetWarning: { fontSize: 13, color: Colors.error, fontWeight: '600', marginBottom: 16, paddingHorizontal: 4 },
-  catGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 12 },
-  catCard: { width: '47%', backgroundColor: Colors.surface, borderRadius: 14, padding: 14, borderWidth: 2, borderColor: 'transparent', alignItems: 'flex-start' },
-  catCardAdd: { justifyContent: 'center', alignItems: 'center', borderColor: Colors.border, borderStyle: 'dashed' },
-  catCardAddText: { fontSize: 12, color: Colors.textSecondary, marginTop: 6, textAlign: 'center' },
-  catCardEmoji: { fontSize: 22, marginBottom: 6 },
-  catCardName: { fontSize: 13, fontWeight: '700', color: Colors.text, marginBottom: 4 },
-  catCardBalance: { fontSize: 12, fontWeight: '600', color: Colors.primary },
-  catCardBalanceOver: { color: Colors.error },
-  catCardNoLimit: { fontSize: 12, color: Colors.textSecondary },
+  overBudgetWarning: { fontSize: 13, color: Colors.error, fontWeight: '600', marginTop: -8, marginBottom: 16, paddingHorizontal: 4 },
+  // category chips — a compact horizontal scroller replaces the old 2-column
+  // grid that repeated each category's budget balance on every tile; that
+  // info now lives in one place (balanceCallout) for the selected category.
+  chipRow: { marginBottom: 12 },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.surface, borderRadius: 20, borderWidth: 2, borderColor: 'transparent', paddingHorizontal: 14, paddingVertical: 9 },
+  chipAdd: { borderColor: Colors.border, borderStyle: 'dashed' },
+  chipEmoji: { fontSize: 16 },
+  chipName: { fontSize: 13.5, fontWeight: '700', color: Colors.text },
+  chipAddText: { fontSize: 13.5, fontWeight: '600', color: Colors.textSecondary },
   balanceCallout: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primary + '1A', borderRadius: 10, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: Colors.primary + '44' },
   balanceCalloutOver: { backgroundColor: Colors.error + '1A', borderColor: Colors.error + '44' },
   balanceCalloutText: { flex: 1, fontSize: 13, color: Colors.primary, fontWeight: '500', lineHeight: 18 },
   input: { backgroundColor: Colors.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: Colors.text, marginBottom: 20, borderWidth: 1, borderColor: Colors.border },
-  receiptBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.surface, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, borderStyle: 'dashed', paddingHorizontal: 16, paddingVertical: 14, marginBottom: 20 },
-  receiptBtnText: { fontSize: 15, color: Colors.textSecondary },
+  receiptBtnRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
+  receiptBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, borderStyle: 'dashed', paddingHorizontal: 12, paddingVertical: 14 },
+  receiptBtnText: { fontSize: 14, color: Colors.textSecondary, fontWeight: '600' },
   receiptPreviewWrap: { position: 'relative', marginBottom: 20, alignSelf: 'flex-start' },
   receiptPreview: { width: 120, height: 120, borderRadius: 12 },
   removeReceipt: { position: 'absolute', top: -8, right: -8 },
@@ -436,6 +472,7 @@ const styles = StyleSheet.create({
   cancelBtn: { flex: 1, backgroundColor: Colors.surface, borderRadius: 12, paddingVertical: 16, alignItems: 'center' },
   cancelText: { color: Colors.textSecondary, fontSize: 16, fontWeight: '600' },
   saveBtn: { flex: 2, backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 16, alignItems: 'center' },
+  dangerBtn: { backgroundColor: Colors.error },
   saveText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   catPreview: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 14, borderWidth: 2, marginBottom: 20 },
   catPreviewEmoji: { fontSize: 28 },
@@ -444,4 +481,8 @@ const styles = StyleSheet.create({
   colorGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20 },
   colorDot: { width: 36, height: 36, borderRadius: 18 },
   colorDotSelected: { borderWidth: 3, borderColor: Colors.text },
+  // in-app dialog (replaces Alert.alert, which doesn't render on web)
+  dialogOverlay: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  dialogBox: { width: '100%', maxWidth: 400, backgroundColor: Colors.surface, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, padding: 20 },
+  dialogMessage: { fontSize: 13.5, color: Colors.textSecondary, lineHeight: 19, marginTop: -8, marginBottom: 16 },
 });
