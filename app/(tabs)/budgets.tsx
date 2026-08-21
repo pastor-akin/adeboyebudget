@@ -24,7 +24,7 @@ import {
   getCategories, addCategory, renameCategory, deleteCategory, mergeCategory, demoteCategory,
   getYearlyBudgets, upsertBudget, deleteBudget,
   distributeYearlyBudget, clearYearlyDistribution,
-  getExpensesForYear, addExpense, deleteExpense, uploadReceipt,
+  getExpensesForYear, addExpense, deleteExpense, updateExpense, uploadReceipt,
   getIncomeForYear, addIncome, deleteIncome, getIncomeNames, sumIncome,
   buildMonthlyBreakdown, buildMonthlyComparison, buildBudgetCsv, buildBudgetReportHtml,
 } from '../../services/supabase';
@@ -97,6 +97,9 @@ export default function BudgetsScreen() {
   const [expDesc, setExpDesc] = useState('');
   const [expDate, setExpDate] = useState(todayStr());
   const [expReceiptUri, setExpReceiptUri] = useState<string | null>(null);
+  // Set when the expense form is opened to edit an existing row instead of
+  // creating a new one — saveExpense updates it in place when this is set.
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
   // income
   const [income, setIncome] = useState<Income[]>([]);
@@ -372,7 +375,19 @@ export default function BudgetsScreen() {
   };
 
   const openNewExpense = () => {
+    setEditingExpense(null);
     setExpAmount(''); setExpVendor(''); setExpDesc(''); setExpDate(todayStr()); setExpReceiptUri(null);
+    setShowExpForm(true);
+  };
+
+  const openEditExpense = (e: Expense) => {
+    const { vendor, desc } = decodeNote(e.note);
+    setEditingExpense(e);
+    setExpAmount(String(e.amount));
+    setExpVendor(vendor);
+    setExpDesc(desc);
+    setExpDate(e.date);
+    setExpReceiptUri(e.receipt_url ?? null);
     setShowExpForm(true);
   };
 
@@ -383,16 +398,34 @@ export default function BudgetsScreen() {
     if (!expDate.trim()) { Alert('Date Required', 'Enter the expense date (YYYY-MM-DD).'); return; }
     setBusy(true);
     try {
-      let receipt_url: string | undefined;
-      if (expReceiptUri) receipt_url = await uploadReceipt(expReceiptUri);
-      const created = await addExpense({
-        date: expDate.trim(), amount, category: activeCategory.name,
-        note: encodeNote(expVendor, expDesc), added_by_name: userName, receipt_url,
-      });
-      setExpenses(p => [created, ...p]);
-      setAllExpenses(p => [created, ...p]);
-      setSpentByCategory(p => ({ ...p, [activeCategory.name]: (p[activeCategory.name] ?? 0) + amount }));
+      // expReceiptUri holds either the unchanged remote receipt_url, a
+      // freshly-picked local file:// uri (needs uploading), or null
+      // (removed) — only upload when it's genuinely a new local file.
+      let receipt_url: string | null | undefined = expReceiptUri;
+      if (expReceiptUri && expReceiptUri !== editingExpense?.receipt_url) {
+        receipt_url = await uploadReceipt(expReceiptUri);
+      }
+      const note = encodeNote(expVendor, expDesc);
+
+      if (editingExpense) {
+        const prevAmount = Number(editingExpense.amount);
+        const updated = await updateExpense(editingExpense.id, {
+          date: expDate.trim(), amount, category: activeCategory.name, note, receipt_url,
+        });
+        setExpenses(p => p.map(x => (x.id === updated.id ? updated : x)));
+        setAllExpenses(p => p.map(x => (x.id === updated.id ? updated : x)));
+        setSpentByCategory(p => ({ ...p, [activeCategory.name]: Math.max(0, (p[activeCategory.name] ?? 0) - prevAmount + amount) }));
+      } else {
+        const created = await addExpense({
+          date: expDate.trim(), amount, category: activeCategory.name,
+          note, added_by_name: userName, receipt_url: receipt_url ?? undefined,
+        });
+        setExpenses(p => [created, ...p]);
+        setAllExpenses(p => [created, ...p]);
+        setSpentByCategory(p => ({ ...p, [activeCategory.name]: (p[activeCategory.name] ?? 0) + amount }));
+      }
       setShowExpForm(false);
+      setEditingExpense(null);
     } catch (e: any) {
       Alert('Error', e.message ?? 'Could not save this expense.');
     } finally {
@@ -524,19 +557,21 @@ export default function BudgetsScreen() {
               const { vendor, desc } = decodeNote(e.note);
               return (
                 <View key={e.id} style={styles.expCard}>
-                  {e.receipt_url ? (
-                    <Image source={{ uri: e.receipt_url }} style={styles.expThumb} />
-                  ) : (
-                    <View style={[styles.expThumb, styles.expThumbPlaceholder]}><MaterialIcons name="receipt-long" size={20} color={Colors.textMuted} /></View>
-                  )}
-                  <View style={{ flex: 1 }}>
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                      <Text style={styles.expAmount}>${fmt(Number(e.amount))}</Text>
-                      <Text style={styles.expDate}>{e.date}</Text>
+                  <Pressable style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }} onPress={() => openEditExpense(e)}>
+                    {e.receipt_url ? (
+                      <Image source={{ uri: e.receipt_url }} style={styles.expThumb} />
+                    ) : (
+                      <View style={[styles.expThumb, styles.expThumbPlaceholder]}><MaterialIcons name="receipt-long" size={20} color={Colors.textMuted} /></View>
+                    )}
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                        <Text style={styles.expAmount}>${fmt(Number(e.amount))}</Text>
+                        <Text style={styles.expDate}>{e.date}</Text>
+                      </View>
+                      {!!vendor && <Text style={styles.expVendor}>{vendor}</Text>}
+                      {!!desc && <Text style={styles.expDesc} numberOfLines={2}>{desc}</Text>}
                     </View>
-                    {!!vendor && <Text style={styles.expVendor}>{vendor}</Text>}
-                    {!!desc && <Text style={styles.expDesc} numberOfLines={2}>{desc}</Text>}
-                  </View>
+                  </Pressable>
                   <Pressable onPress={() => removeExpense(e)} hitSlop={8}><MaterialIcons name="delete-outline" size={18} color="#EF4444" /></Pressable>
                 </View>
               );
@@ -546,7 +581,7 @@ export default function BudgetsScreen() {
           {showExpForm ? (
             <View style={styles.sheetOverlay}>
               <View style={styles.sheet}>
-                <Text style={styles.sheetTitle}>New Expense</Text>
+                <Text style={styles.sheetTitle}>{editingExpense ? 'Edit Expense' : 'New Expense'}</Text>
                 <Text style={styles.blockLabel}>Amount *</Text>
                 <TextInput style={styles.input} value={expAmount} onChangeText={setExpAmount} placeholder="0.00" placeholderTextColor={Colors.textMuted} keyboardType="decimal-pad" />
                 <Text style={[styles.blockLabel, { marginTop: 10 }]}>Vendor</Text>
@@ -561,7 +596,7 @@ export default function BudgetsScreen() {
                 </Pressable>
                 {expReceiptUri ? <Image source={{ uri: expReceiptUri }} style={styles.receiptPreview} /> : null}
                 <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
-                  <Pressable style={[styles.cancelBtn, { flex: 1 }]} onPress={() => setShowExpForm(false)}><Text style={styles.cancelBtnText}>Cancel</Text></Pressable>
+                  <Pressable style={[styles.cancelBtn, { flex: 1 }]} onPress={() => { setShowExpForm(false); setEditingExpense(null); }}><Text style={styles.cancelBtnText}>Cancel</Text></Pressable>
                   <Pressable style={[styles.saveBtn, { flex: 1 }, busy && { opacity: 0.6 }]} onPress={saveExpense} disabled={busy}>
                     {busy ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.submitText}>Save</Text>}
                   </Pressable>

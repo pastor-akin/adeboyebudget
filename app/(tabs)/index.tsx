@@ -11,7 +11,7 @@ import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import {
   supabase, Expense, BudgetLimit, AppCategory, Category,
-  addExpense, deleteExpense, getExpenses, getBudgets,
+  addExpense, deleteExpense, updateExpense, getExpenses, getBudgets,
   getCategories, addCategory, uploadReceipt, toMonthKey, formatMonthLabel,
 } from '../../services/supabase';
 import { Colors, COLOR_OPTIONS, EMOJI_OPTIONS } from '../../constants/theme';
@@ -35,6 +35,10 @@ export default function ExpensesScreen() {
   const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [receiptUri, setReceiptUri] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // Set when the Add-Expense form is opened for an existing expense instead
+  // of a brand-new one — same form, but handleSave updates this row in
+  // place rather than inserting a new one.
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
   const [showNewCat, setShowNewCat] = useState(false);
   const [newCatName, setNewCatName] = useState('');
@@ -129,18 +133,52 @@ export default function ExpensesScreen() {
     if (!result.canceled) setReceiptUri(result.assets[0].uri);
   }
 
-  async function handleAdd() {
+  function closeExpenseForm() {
+    setShowAdd(false);
+    setEditingExpense(null);
+    setAmount(''); setNote(''); setReceiptUri(null);
+    setDate(new Date().toISOString().split('T')[0]);
+  }
+
+  function openNewExpense() {
+    setEditingExpense(null);
+    setAmount(''); setNote(''); setReceiptUri(null);
+    setDate(new Date().toISOString().split('T')[0]);
+    setShowAdd(true);
+  }
+
+  function openEditExpense(item: Expense) {
+    setEditingExpense(item);
+    setAmount(String(item.amount));
+    setCategory(item.category);
+    setNote(item.note ?? '');
+    setDate(item.date);
+    setReceiptUri(item.receipt_url ?? null);
+    setShowAdd(true);
+  }
+
+  async function handleSave() {
     const num = parseFloat(amount);
     if (!amount || isNaN(num) || num <= 0) { showAlert('Invalid amount', 'Enter a valid dollar amount.'); return; }
     setSaving(true);
     try {
-      let receipt_url: string | undefined;
-      if (receiptUri) receipt_url = await uploadReceipt(receiptUri);
-      await addExpense({ date, amount: num, category, note: note.trim() || undefined, added_by_name: userName, receipt_url });
+      // receiptUri holds either the existing remote receipt_url (unchanged),
+      // a freshly-picked local file:// uri (needs uploading), or null
+      // (removed). Only upload when it's actually a new local file.
+      let receipt_url: string | null | undefined = receiptUri;
+      if (receiptUri && receiptUri !== editingExpense?.receipt_url) {
+        receipt_url = await uploadReceipt(receiptUri);
+      }
+      if (editingExpense) {
+        const updated = await updateExpense(editingExpense.id, {
+          date, amount: num, category, note: note.trim() || undefined, receipt_url,
+        });
+        setExpenses(prev => prev.map(e => (e.id === updated.id ? updated : e)));
+      } else {
+        await addExpense({ date, amount: num, category, note: note.trim() || undefined, added_by_name: userName, receipt_url: receipt_url ?? undefined });
+      }
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      setShowAdd(false);
-      setAmount(''); setNote(''); setReceiptUri(null);
-      setDate(new Date().toISOString().split('T')[0]);
+      closeExpenseForm();
       load();
     } catch (e: any) {
       showAlert('Error', e.message);
@@ -253,17 +291,19 @@ export default function ExpensesScreen() {
             const cat = categories.find(c => c.name === item.category);
             return (
               <View style={styles.row}>
-                <View style={[styles.catDot, { backgroundColor: cat?.color ?? Colors.surfaceHigh }]}>
-                  <Text style={styles.catEmoji}>{cat?.emoji ?? '📦'}</Text>
-                </View>
-                <View style={styles.rowInfo}>
-                  <Text style={styles.rowCategory} numberOfLines={1}>{item.category}</Text>
-                  <Text style={styles.rowMeta} numberOfLines={1}>
-                    {item.date}{item.added_by_name ? ` · ${item.added_by_name}` : ''}{item.note ? ` · ${item.note}` : ''}
-                  </Text>
-                </View>
-                {item.receipt_url && <Image source={{ uri: item.receipt_url }} style={styles.receiptThumb} contentFit="cover" />}
-                <Text style={styles.rowAmount}>${item.amount.toFixed(2)}</Text>
+                <TouchableOpacity style={styles.rowTapArea} onPress={() => openEditExpense(item)} activeOpacity={0.7}>
+                  <View style={[styles.catDot, { backgroundColor: cat?.color ?? Colors.surfaceHigh }]}>
+                    <Text style={styles.catEmoji}>{cat?.emoji ?? '📦'}</Text>
+                  </View>
+                  <View style={styles.rowInfo}>
+                    <Text style={styles.rowCategory} numberOfLines={1}>{item.category}</Text>
+                    <Text style={styles.rowMeta} numberOfLines={1}>
+                      {item.date}{item.added_by_name ? ` · ${item.added_by_name}` : ''}{item.note ? ` · ${item.note}` : ''}
+                    </Text>
+                  </View>
+                  {item.receipt_url && <Image source={{ uri: item.receipt_url }} style={styles.receiptThumb} contentFit="cover" />}
+                  <Text style={styles.rowAmount}>${item.amount.toFixed(2)}</Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={styles.rowDeleteBtn} onPress={() => handleDelete(item)} hitSlop={8}>
                   <Ionicons name="trash-outline" size={16} color={Colors.textSecondary} />
                 </TouchableOpacity>
@@ -273,7 +313,7 @@ export default function ExpensesScreen() {
         />
       )}
 
-      <TouchableOpacity style={styles.fab} onPress={() => setShowAdd(true)}>
+      <TouchableOpacity style={styles.fab} onPress={openNewExpense}>
         <Ionicons name="add" size={28} color="#fff" />
       </TouchableOpacity>
 
@@ -287,7 +327,7 @@ export default function ExpensesScreen() {
         <KeyboardAvoidingView style={styles.modal} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <View style={styles.modalHandle} />
-            <Text style={styles.modalTitle}>Add Expense</Text>
+            <Text style={styles.modalTitle}>{editingExpense ? 'Edit Expense' : 'Add Expense'}</Text>
 
             <Text style={styles.label}>Amount</Text>
             <TextInput
@@ -373,11 +413,11 @@ export default function ExpensesScreen() {
             )}
 
             <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowAdd(false)}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={closeExpenseForm}>
                 <Text style={styles.cancelText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleAdd} disabled={saving}>
-                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>Add</Text>}
+              <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving}>
+                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>{editingExpense ? 'Save' : 'Add'}</Text>}
               </TouchableOpacity>
             </View>
           </ScrollView>
@@ -436,6 +476,7 @@ const styles = StyleSheet.create({
   monthLabel: { fontSize: 17, fontWeight: '700', color: Colors.text },
   totalLabel: { fontSize: 13, color: Colors.primary, marginTop: 2 },
   row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border, gap: 10 },
+  rowTapArea: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
   catDot: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
   catEmoji: { fontSize: 18 },
   rowInfo: { flex: 1 },

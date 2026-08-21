@@ -338,6 +338,29 @@ export async function deleteExpense(id: string): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * Edits an existing expense in place (amount, category, date, note, and/or
+ * receipt) instead of the old delete-and-re-add workaround. Only the fields
+ * passed in `updates` are changed — omit a field to leave it as-is. Pass
+ * `receipt_url: null` to remove an attached receipt without setting a new one.
+ */
+export async function updateExpense(id: string, updates: {
+  date?: string;
+  amount?: number;
+  category?: Category;
+  note?: string;
+  receipt_url?: string | null;
+}): Promise<Expense> {
+  const { data, error } = await supabase
+    .from('budget_expenses')
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 // ─── Budgets ─────────────────────────────────────────────────────────────────
 
 export async function getBudgets(month: string): Promise<BudgetLimit[]> {
