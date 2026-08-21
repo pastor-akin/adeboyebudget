@@ -608,3 +608,113 @@ export function buildBudgetCsv(expenses: Expense[]): string {
   ].map(csvEscape).join(','));
   return [headers.map(csvEscape).join(','), ...rows].join('\n');
 }
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * Builds a printable/shareable HTML budget report for one year: a
+ * three-stat summary, a per-category budgeted-vs-actual table, and a
+ * month-by-month income/expenses/net table. Feed the HTML string to
+ * expo-print's printToFileAsync — on native it writes a real PDF file you
+ * can then hand to expo-sharing; on web it opens the browser's print
+ * dialog, where "Save as PDF" is one of the destinations (expo-print does
+ * not produce a downloadable PDF file directly on web).
+ *
+ * `generatedAt` is a pre-formatted date string rather than computed here,
+ * since some callers (e.g. workflow scripts) can't use `new Date()`.
+ */
+export function buildBudgetReportHtml(params: {
+  yearKey: string;
+  categories: AppCategory[];
+  plannedByCategory: Record<string, number>;
+  spentByCategory: Record<string, number>;
+  income: Income[];
+  expenses: Expense[];
+  generatedAt: string;
+}): string {
+  const { yearKey, categories, plannedByCategory, spentByCategory, income, expenses, generatedAt } = params;
+
+  const fmt = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money = (n: number) => (n < 0 ? `-$${fmt(Math.abs(n))}` : `$${fmt(n)}`);
+
+  const totalPlanned = Object.values(plannedByCategory).reduce((s, v) => s + v, 0);
+  const totalSpent = Object.values(spentByCategory).reduce((s, v) => s + v, 0);
+  const totalIncome = sumIncome(income);
+  const net = totalIncome - totalSpent;
+
+  const categoryRows = categories
+    .map(c => ({ c, planned: plannedByCategory[c.name] ?? 0, spent: spentByCategory[c.name] ?? 0 }))
+    .filter(r => r.planned > 0 || r.spent > 0)
+    .sort((a, b) => b.spent - a.spent)
+    .map(r => {
+      const remaining = r.planned - r.spent;
+      return `<tr>
+        <td>${escapeHtml(r.c.emoji)} ${escapeHtml(r.c.name)}</td>
+        <td class="num">${r.planned > 0 ? money(r.planned) : '—'}</td>
+        <td class="num">${money(r.spent)}</td>
+        <td class="num ${r.planned > 0 ? (remaining < 0 ? 'over' : 'under') : ''}">${r.planned > 0 ? money(remaining) : '—'}</td>
+      </tr>`;
+    })
+    .join('');
+
+  const monthRows = buildMonthlyComparison(yearKey, income, expenses, totalPlanned)
+    .map(row => `<tr>
+      <td>${row.monthLabel}</td>
+      <td class="num">${row.income > 0 ? money(row.income) : '—'}</td>
+      <td class="num">${row.expenses > 0 ? money(row.expenses) : '—'}</td>
+      <td class="num ${row.net < 0 ? 'over' : 'under'}">${money(row.net)}</td>
+    </tr>`)
+    .join('');
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: #1E293B; padding: 32px; margin: 0; }
+  h1 { font-size: 22px; margin: 0 0 2px; }
+  .subtitle { color: #64748B; font-size: 12.5px; margin-bottom: 22px; }
+  .summary { display: flex; gap: 12px; margin-bottom: 26px; }
+  .stat { flex: 1; border: 1px solid #E2E8F0; border-radius: 10px; padding: 12px 14px; }
+  .stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: #64748B; }
+  .stat-value { font-size: 19px; font-weight: 700; margin-top: 3px; }
+  h2 { font-size: 14px; margin: 22px 0 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid #E2E8F0; font-size: 12.5px; }
+  th { text-transform: uppercase; font-size: 9.5px; letter-spacing: .5px; color: #64748B; font-weight: 700; }
+  td.num, th.num { text-align: right; }
+  .over { color: #DC2626; font-weight: 700; }
+  .under { color: #059669; font-weight: 700; }
+  .footer { margin-top: 26px; font-size: 10.5px; color: #94A3B8; }
+  @media print { body { padding: 12px; } }
+</style>
+</head>
+<body>
+  <h1>Adeboye Monthly Budget</h1>
+  <div class="subtitle">${escapeHtml(yearKey)} Report — generated ${escapeHtml(generatedAt)}</div>
+
+  <div class="summary">
+    <div class="stat"><div class="stat-label">Total Income</div><div class="stat-value" style="color:#059669">${money(totalIncome)}</div></div>
+    <div class="stat"><div class="stat-label">Total Expenses</div><div class="stat-value" style="color:#F97316">${money(totalSpent)}</div></div>
+    <div class="stat"><div class="stat-label">Net</div><div class="stat-value ${net < 0 ? 'over' : 'under'}">${money(net)}</div></div>
+  </div>
+
+  <h2>Categories</h2>
+  <table>
+    <tr><th>Category</th><th class="num">Budgeted</th><th class="num">Spent</th><th class="num">Remaining</th></tr>
+    ${categoryRows || '<tr><td colspan="4" style="color:#94A3B8">No category activity this year.</td></tr>'}
+  </table>
+
+  <h2>Income vs. Expenses by Month</h2>
+  <table>
+    <tr><th>Month</th><th class="num">Income</th><th class="num">Expenses</th><th class="num">Net</th></tr>
+    ${monthRows}
+  </table>
+
+  <div class="footer">Adeboye Monthly Budget · generated ${escapeHtml(generatedAt)}</div>
+</body>
+</html>`;
+}

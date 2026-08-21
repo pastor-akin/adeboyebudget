@@ -17,6 +17,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import {
   supabase, AppCategory, BudgetLimit, Expense, Income,
   getCategories, addCategory, renameCategory, deleteCategory, mergeCategory,
@@ -24,7 +26,7 @@ import {
   distributeYearlyBudget, clearYearlyDistribution,
   getExpensesForYear, addExpense, deleteExpense, uploadReceipt,
   getIncomeForYear, addIncome, deleteIncome, getIncomeNames, sumIncome,
-  buildMonthlyBreakdown, buildMonthlyComparison, buildBudgetCsv,
+  buildMonthlyBreakdown, buildMonthlyComparison, buildBudgetCsv, buildBudgetReportHtml,
 } from '../../services/supabase';
 import {
   PalaceColors as Colors, PalaceSpacing as Spacing, PalaceRadius as Radius,
@@ -86,6 +88,7 @@ export default function BudgetsScreen() {
   // accordion expand + merge-duplicate picker
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [mergeSource, setMergeSource] = useState<AppCategory | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   // add-expense form
   const [showExpForm, setShowExpForm] = useState(false);
@@ -396,6 +399,47 @@ export default function BudgetsScreen() {
     catch { Alert('Error', 'Could not open the share sheet.'); }
   };
 
+  const exportPdf = async () => {
+    if (allExpenses.length === 0) { Alert('Nothing to Export', `No expenses logged for ${yearKey} yet.`); return; }
+    setExportingPdf(true);
+    try {
+      // Fetch fresh regardless of which mode is currently active — the
+      // `income` state only loads when the Income/Overview tab has been
+      // opened, so relying on it here could silently omit income from the
+      // report if the PDF is generated straight from Categories.
+      const yearIncome = await getIncomeForYear(yearKey);
+      const html = buildBudgetReportHtml({
+        yearKey,
+        categories,
+        plannedByCategory,
+        spentByCategory,
+        income: yearIncome,
+        expenses: allExpenses,
+        generatedAt: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+      });
+      if (Platform.OS === 'web') {
+        // expo-print doesn't produce a downloadable PDF file on web — on
+        // this platform printToFileAsync opens the browser's native print
+        // dialog instead, where "Save as PDF" is one of the destinations.
+        // That's the closest web equivalent to "share as PDF" available
+        // without standing up a server-side PDF renderer.
+        await Print.printToFileAsync({ html });
+      } else {
+        const { uri } = await Print.printToFileAsync({ html });
+        const canShare = await Sharing.isAvailableAsync();
+        if (canShare) {
+          await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `${yearKey} Budget Report`, UTI: 'com.adobe.pdf' });
+        } else {
+          Alert('Saved', `PDF saved to: ${uri}`);
+        }
+      }
+    } catch (e: any) {
+      Alert('Error', e.message ?? 'Could not generate the PDF report.');
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   // ── EXPENSES DRILL-DOWN ─────────────────────────────────────────────────
   if (mode === 'expenses' && activeCategory) {
     const planned = plannedByCategory[activeCategory.name] ?? 0;
@@ -531,10 +575,20 @@ export default function BudgetsScreen() {
       <Pressable style={styles.yearBtn} onPress={() => setYear(y => y + 1)} hitSlop={8}><MaterialIcons name="chevron-right" size={22} color={Colors.textSecondary} /></Pressable>
       <View style={{ flex: 1 }} />
       {showExport ? (
-        <Pressable style={styles.exportBtn} onPress={exportBudget} hitSlop={4}>
-          <MaterialIcons name="ios-share" size={14} color={Colors.primary} />
-          <Text style={styles.exportBtnText}>Share CSV</Text>
-        </Pressable>
+        <>
+          <Pressable style={styles.exportBtn} onPress={exportPdf} hitSlop={4} disabled={exportingPdf}>
+            {exportingPdf ? <ActivityIndicator size="small" color={Colors.primary} /> : (
+              <>
+                <MaterialIcons name="picture-as-pdf" size={14} color={Colors.primary} />
+                <Text style={styles.exportBtnText}>PDF</Text>
+              </>
+            )}
+          </Pressable>
+          <Pressable style={[styles.exportBtn, { marginLeft: 6 }]} onPress={exportBudget} hitSlop={4}>
+            <MaterialIcons name="ios-share" size={14} color={Colors.primary} />
+            <Text style={styles.exportBtnText}>CSV</Text>
+          </Pressable>
+        </>
       ) : null}
     </View>
   );
