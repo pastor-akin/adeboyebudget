@@ -401,10 +401,14 @@ export async function updateExpense(id: string, updates: {
     .from('budget_expenses')
     .update(updates)
     .eq('id', id)
-    .select()
-    .single();
+    .select();
   if (error) throw error;
-  return data;
+  // Zero rows back means the database refused the edit (no update permission)
+  // or the expense no longer exists — say so instead of a cryptic JSON error.
+  if (!data || data.length === 0) {
+    throw new Error("This expense couldn't be changed. It may have been deleted, or editing isn't allowed yet — run supabase_update_policies.sql in the Supabase SQL Editor.");
+  }
+  return data[0];
 }
 
 // ─── Budgets ─────────────────────────────────────────────────────────────────
