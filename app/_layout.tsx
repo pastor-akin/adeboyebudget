@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Session } from '@supabase/supabase-js';
@@ -44,12 +44,16 @@ export default function RootLayout() {
   }
 
   return (
-    <>
-      <StatusBar style="light" />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="auth" />
-      </Stack>
-    </>
+    // On a laptop/desktop browser, keep the app in a phone-width column
+    // instead of stretching cards and the tab bar across the whole screen.
+    <View style={{ flex: 1, backgroundColor: Platform.OS === 'web' ? '#E9ECF2' : Colors.background }}>
+      <View style={{ flex: 1, width: '100%', maxWidth: Platform.OS === 'web' ? 560 : undefined, alignSelf: 'center', backgroundColor: Colors.background, overflow: 'hidden' }}>
+        <StatusBar style="dark" />
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="auth" />
+        </Stack>
+      </View>
+    </View>
   );
 }

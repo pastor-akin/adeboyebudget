@@ -1,9 +1,8 @@
 /*
  * Adeboye Monthly Budget — Budgets tab
- * Styled to match Palace Church Boston's Church Budget screen exactly
- * (the-palace-app-v2/app/church-budget.tsx): same layout, same dark-purple
- * theme (scoped to this screen via constants/palaceTheme.ts), same
- * Categories / Income / Overview mode switcher, same monthly pacing table.
+ * Categories / Income / Overview mode switcher with a monthly pacing table.
+ * Uses the app-wide light theme (via the token names in
+ * constants/palaceTheme.ts, which now point at constants/theme.ts).
  *
  * Data comes from adeboye-budget's own tables (budget_categories,
  * budget_limits, budget_expenses, budget_income) — both household members
@@ -28,6 +27,7 @@ import {
   getIncomeForYear, addIncome, deleteIncome, getIncomeNames, sumIncome,
   buildMonthlyBreakdown, buildMonthlyComparison, buildBudgetCsv, buildBudgetReportHtml,
 } from '../../services/supabase';
+import { CategoryColors } from '../../constants/theme';
 import {
   PalaceColors as Colors, PalaceSpacing as Spacing, PalaceRadius as Radius,
   PalaceShadow as Shadow, PalaceTypography as Typography,
@@ -660,7 +660,7 @@ export default function BudgetsScreen() {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Budget</Text>
+          <Text style={styles.headerTitle}>Budgets</Text>
         </View>
         {ModeSwitcher}
         {YearRow(false)}
@@ -748,7 +748,7 @@ export default function BudgetsScreen() {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <SafeAreaView style={styles.container} edges={['top']}>
           <View style={styles.header}>
-            <Text style={styles.headerTitle}>Budget</Text>
+            <Text style={styles.headerTitle}>Budgets</Text>
             <Pressable style={styles.newBtn} onPress={openNewIncome}><MaterialIcons name="add" size={18} color="#fff" /><Text style={styles.newBtnText}>Income</Text></Pressable>
           </View>
           {ModeSwitcher}
@@ -858,7 +858,7 @@ export default function BudgetsScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Budget</Text>
+        <Text style={styles.headerTitle}>Budgets</Text>
         <Pressable style={styles.newBtn} onPress={openNewCategory}><MaterialIcons name="add" size={18} color="#fff" /><Text style={styles.newBtnText}>Category</Text></Pressable>
       </View>
       {ModeSwitcher}
@@ -930,11 +930,23 @@ export default function BudgetsScreen() {
             return (
               <View key={c.name} style={styles.catCard}>
                 <Pressable style={styles.catHeaderRow} onPress={() => toggleExpand(c.name)}>
-                  <Text style={styles.catTitle} numberOfLines={1}>{c.emoji} {c.name}</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={[styles.catHeaderAmt, over && { color: '#EF4444' }]}>${fmt(spent)}</Text>
-                    <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={22} color={Colors.textMuted} />
+                  <View style={[styles.catIcon, { backgroundColor: (c.color ?? CategoryColors[c.name] ?? '#64748B') + '22' }]}>
+                    <Text style={{ fontSize: 19 }}>{c.emoji}</Text>
                   </View>
+                  <View style={{ flex: 1, gap: 6 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                      <Text style={styles.catTitle} numberOfLines={1}>{c.name}</Text>
+                      <Text style={[styles.catHeaderAmt, over && { color: Colors.error }]}>
+                        ${fmt(spent)}{planned > 0 ? <Text style={styles.catHeaderOf}> / ${fmt(planned)}</Text> : null}
+                      </Text>
+                    </View>
+                    {planned > 0 ? (
+                      <View style={styles.progressBarBg}>
+                        <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: over ? Colors.error : pct > 85 ? Colors.warning : (c.color ?? Colors.primary) }]} />
+                      </View>
+                    ) : <Text style={styles.catNoBudget}>No budget set</Text>}
+                  </View>
+                  <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={22} color={Colors.textMuted} />
                 </Pressable>
 
                 {isExpanded ? (
@@ -942,11 +954,6 @@ export default function BudgetsScreen() {
                     <Text style={styles.catMeta}>
                       {planned > 0 ? `$${fmt(spent)} of $${fmt(planned)} spent${over ? ' — over budget' : ''}` : `$${fmt(spent)} spent this year · No budget set`}
                     </Text>
-                    {planned > 0 ? (
-                      <View style={styles.progressBarBg}>
-                        <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: over ? '#EF4444' : Colors.primary }]} />
-                      </View>
-                    ) : null}
                     <View style={styles.catExpandedActions}>
                       <Pressable style={styles.expandedActionBtn} onPress={() => openExpenses(c)}>
                         <MaterialIcons name="receipt-long" size={15} color={Colors.primary} />
@@ -1032,31 +1039,28 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   header: {
     flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
-    paddingHorizontal: Spacing.md, paddingVertical: Spacing.md,
-    borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder,
+    paddingHorizontal: 20, paddingTop: 14, paddingBottom: 10,
   },
-  backBtn: { width: 40, height: 40, borderRadius: Radius.full, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' },
-  headerTitle: { ...Typography.h3, color: Colors.textPrimary, fontWeight: '700', flex: 1 },
+  backBtn: { width: 40, height: 40, borderRadius: Radius.full, backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center', ...Shadow.card },
+  headerTitle: { fontSize: 28, lineHeight: 34, color: Colors.textPrimary, fontWeight: '800', letterSpacing: -0.5, flex: 1 },
   newBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.primary, borderRadius: Radius.full, paddingHorizontal: 14, paddingVertical: 8, ...Shadow.glow },
   newBtnText: { ...Typography.label, color: '#fff', fontWeight: '700', fontSize: 13 },
-  busyOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' },
-  yearRow: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: Spacing.md, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder },
+  busyOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(255,255,255,0.6)', alignItems: 'center', justifyContent: 'center' },
+  yearRow: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: Spacing.md, paddingVertical: 8 },
   yearBtn: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center' },
   yearText: { ...Typography.h3, color: Colors.textPrimary, fontWeight: '700', minWidth: 50, textAlign: 'center' },
   exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: Colors.primary + '12', borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.primary + '30', paddingHorizontal: 10, paddingVertical: 6, marginLeft: 6 },
   exportBtnText: { ...Typography.label, color: Colors.primary, fontWeight: '700', fontSize: 12 },
   modeSwitchRow: {
-    flexDirection: 'row', gap: 8, paddingHorizontal: Spacing.md, paddingTop: 10, paddingBottom: 2,
-    borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder,
+    flexDirection: 'row', gap: 4, marginHorizontal: Spacing.md, marginTop: 4, padding: 4,
+    backgroundColor: Colors.surfaceElevated, borderRadius: Radius.full,
   },
   modeSwitchBtn: {
-    flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 9,
-    borderRadius: Radius.full, backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.surfaceBorder,
-    marginBottom: 8,
+    flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 9, borderRadius: Radius.full,
   },
-  modeSwitchBtnActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
-  modeSwitchText: { ...Typography.label, color: Colors.textSecondary, fontWeight: '700', fontSize: 13 },
-  modeSwitchTextActive: { color: '#fff' },
+  modeSwitchBtnActive: { backgroundColor: Colors.surface, ...Shadow.card },
+  modeSwitchText: { ...Typography.label, color: Colors.textSecondary, fontWeight: '700', fontSize: 13.5 },
+  modeSwitchTextActive: { color: Colors.textPrimary },
   suggestBox: {
     backgroundColor: Colors.background, borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.surfaceBorder,
     marginTop: 4, overflow: 'hidden',
@@ -1065,11 +1069,11 @@ const styles = StyleSheet.create({
   suggestText: { ...Typography.body, color: Colors.textPrimary, fontSize: 14 },
   sectionLabel: { fontSize: 12, fontWeight: '700', color: Colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.8, marginTop: 4 },
   // summary
-  summaryCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.surfaceBorder, padding: Spacing.md, gap: 10 },
+  summaryCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: Spacing.md, gap: 10, ...Shadow.card },
   summaryRow: { flexDirection: 'row' },
   summaryLabel: { ...Typography.label, color: Colors.textMuted, fontSize: 11, textTransform: 'uppercase' },
   summaryVal: { ...Typography.h3, color: Colors.textPrimary, fontWeight: '700', marginTop: 2 },
-  progressBarBg: { height: 6, backgroundColor: Colors.background, borderRadius: 3, overflow: 'hidden' },
+  progressBarBg: { height: 6, backgroundColor: Colors.surfaceElevated, borderRadius: 3, overflow: 'hidden' },
   progressBarFill: { height: 6, borderRadius: 3 },
   // categories
   empty: { alignItems: 'center', paddingTop: 50, paddingHorizontal: Spacing.xl, gap: 10 },
@@ -1077,20 +1081,23 @@ const styles = StyleSheet.create({
   emptyTitle: { ...Typography.h3, color: Colors.textPrimary, textAlign: 'center' },
   emptyText: { ...Typography.body, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22 },
   emptyCta: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.primary, borderRadius: Radius.full, paddingHorizontal: 18, paddingVertical: 12, marginTop: 8, ...Shadow.glow },
-  catCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.surfaceBorder, ...Shadow.card, overflow: 'hidden' },
-  catHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: Spacing.md },
+  catCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, ...Shadow.card },
+  catHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
+  catIcon: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
+  catHeaderOf: { fontWeight: '500', color: Colors.textMuted },
+  catNoBudget: { fontSize: 12.5, color: Colors.textMuted },
   catTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   catTitle: { ...Typography.bodyMedium, color: Colors.textPrimary, fontWeight: '700', flexShrink: 1, fontSize: 15 },
-  catHeaderAmt: { ...Typography.bodyMedium, color: Colors.textSecondary, fontWeight: '700' },
+  catHeaderAmt: { fontSize: 14, color: Colors.textPrimary, fontWeight: '700' },
   catMeta: { ...Typography.caption, color: Colors.textMuted, marginTop: 3, marginBottom: 6 },
   catExpanded: { paddingHorizontal: Spacing.md, paddingBottom: Spacing.md, gap: 6, borderTopWidth: 1, borderTopColor: Colors.surfaceBorder, paddingTop: 10 },
   catExpandedActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
-  expandedActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.background, borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.surfaceBorder, paddingHorizontal: 12, paddingVertical: 7 },
+  expandedActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: Colors.background, borderRadius: Radius.full, paddingHorizontal: 12, paddingVertical: 8 },
   expandedActionText: { ...Typography.label, color: Colors.primary, fontWeight: '700', fontSize: 12.5 },
   catActions: { flexDirection: 'column', gap: 6 },
   iconBtn: { width: 30, height: 30, borderRadius: Radius.md, backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' },
   // "this month" summary
-  thisMonthCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.primary + '30', padding: Spacing.md, gap: 10, ...Shadow.card },
+  thisMonthCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: Spacing.md, gap: 10, ...Shadow.card },
   thisMonthTitle: { ...Typography.h3, color: Colors.textPrimary, fontWeight: '700', fontSize: 16 },
   thisMonthStatus: { ...Typography.body, color: Colors.textSecondary, fontSize: 13.5, fontWeight: '600' },
   thisMonthTopLabel: { ...Typography.caption, color: Colors.textMuted, fontWeight: '700', textTransform: 'uppercase', fontSize: 10, letterSpacing: 0.6, marginTop: 2 },
@@ -1102,7 +1109,7 @@ const styles = StyleSheet.create({
   mergeOptionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder },
   mergeOptionText: { ...Typography.body, color: Colors.textPrimary, fontSize: 15, flexShrink: 1, marginRight: 8 },
   // monthly pacing / comparison
-  monthlyCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.surfaceBorder, paddingVertical: 4, paddingHorizontal: Spacing.sm },
+  monthlyCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, paddingVertical: 4, paddingHorizontal: Spacing.sm, ...Shadow.card },
   monthlyHeaderRow: { flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder },
   monthlyHeaderCell: { ...Typography.caption, color: Colors.textMuted, fontWeight: '700', textTransform: 'uppercase', fontSize: 10 },
   monthlyRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: Colors.surfaceBorder },
@@ -1110,7 +1117,7 @@ const styles = StyleSheet.create({
   monthlyCell: { ...Typography.caption, color: Colors.textSecondary, fontSize: 12.5 },
   monthlyFootnote: { ...Typography.caption, color: Colors.textMuted, fontSize: 11, lineHeight: 15, paddingHorizontal: 2 },
   // expenses / income rows
-  expCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: Colors.surface, borderRadius: Radius.lg, borderWidth: 1, borderColor: Colors.surfaceBorder, padding: Spacing.md },
+  expCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: Spacing.md, ...Shadow.card },
   expThumb: { width: 44, height: 44, borderRadius: Radius.md },
   expThumbPlaceholder: { backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' },
   expAmount: { ...Typography.bodyMedium, color: Colors.textPrimary, fontWeight: '700' },
@@ -1119,12 +1126,12 @@ const styles = StyleSheet.create({
   expDesc: { ...Typography.caption, color: Colors.textMuted, marginTop: 1 },
   // forms
   blockLabel: { ...Typography.bodyMedium, color: Colors.textPrimary, fontWeight: '700', marginBottom: 6 },
-  input: { backgroundColor: Colors.background, borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.surfaceBorder, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: '#F4F4F5' },
-  sheetOverlay: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'flex-end' },
-  sheet: { width: '100%', backgroundColor: Colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, borderWidth: 1, borderColor: Colors.surfaceBorder, padding: Spacing.lg, gap: 2 },
+  input: { backgroundColor: Colors.background, borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.surfaceBorder, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: Colors.textPrimary },
+  sheetOverlay: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(24,32,47,0.4)', alignItems: 'center', justifyContent: 'flex-end' },
+  sheet: { width: '100%', backgroundColor: Colors.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: Spacing.lg, gap: 2 },
   sheetTitle: { ...Typography.h3, color: Colors.textPrimary, fontWeight: '700', marginBottom: 10 },
-  cancelBtn: { alignItems: 'center', justifyContent: 'center', paddingVertical: 14, borderRadius: Radius.full, borderWidth: 1, borderColor: Colors.surfaceBorder },
-  cancelBtnText: { ...Typography.button, color: Colors.textSecondary },
+  cancelBtn: { alignItems: 'center', justifyContent: 'center', paddingVertical: 14, borderRadius: Radius.full, backgroundColor: Colors.surfaceElevated },
+  cancelBtnText: { ...Typography.button, color: Colors.textPrimary },
   saveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.primary, borderRadius: Radius.full, paddingVertical: 14, ...Shadow.glow },
   submitText: { ...Typography.button, color: '#fff' },
   deleteBtn: { backgroundColor: '#EF4444', shadowColor: '#EF4444' },

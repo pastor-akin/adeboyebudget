@@ -29,3 +29,5 @@ web-build/
 .DS_Store
 .vscode/
 *.log
+# local backup archives
+*.tgz

@@ -1,25 +1,26 @@
-// Design tokens copied 1:1 from the Palace Church Boston app's budget screen
-// (the-palace-app-v2/constants/theme.ts), scoped to this file only so the
-// Budgets tab can look exactly like Palace's without re-theming the rest of
-// adeboye-budget (Expenses, Charts, Export, Income all keep their own look).
+// The Budgets tab was originally styled after the Palace Church budget screen
+// and reads its tokens from here. These names are kept so that screen keeps
+// working, but they now point at the app-wide light theme in ./theme.
+import { Colors, Radius, Shadow } from './theme';
+
 export const PalaceColors = {
-  primary: '#7C3AED',
-  primaryLight: '#A78BFA',
-  primaryDark: '#5B21B6',
+  primary: Colors.primary,
+  primaryLight: Colors.primaryLight,
+  primaryDark: Colors.primaryDark,
 
-  background: '#0D0F14',
-  surface: '#161A23',
-  surfaceElevated: '#1E2330',
-  surfaceBorder: '#2A2F3D',
+  background: Colors.background,
+  surface: Colors.surface,
+  surfaceElevated: Colors.surfaceHigh,
+  surfaceBorder: Colors.border,
 
-  textPrimary: '#F4F4F5',
-  textSecondary: '#9AA3B5',
-  textMuted: '#5C6478',
-  textOnPrimary: '#0D0F14',
+  textPrimary: Colors.text,
+  textSecondary: Colors.textSecondary,
+  textMuted: Colors.textMuted,
+  textOnPrimary: '#FFFFFF',
 
-  success: '#4CAF80',
-  error: '#E05A5A',
-  warning: '#E8A94C',
+  success: Colors.success,
+  error: Colors.error,
+  warning: Colors.warning,
 };
 
 export const PalaceTypography = {
@@ -27,43 +28,15 @@ export const PalaceTypography = {
   h1: { fontSize: 26, fontWeight: '700' as const, lineHeight: 34 },
   h2: { fontSize: 22, fontWeight: '600' as const, lineHeight: 30 },
   h3: { fontSize: 18, fontWeight: '600' as const, lineHeight: 26 },
-  body: { fontSize: 16, fontWeight: '400' as const, lineHeight: 26 },
+  body: { fontSize: 16, fontWeight: '400' as const, lineHeight: 24 },
   bodyMedium: { fontSize: 16, fontWeight: '500' as const, lineHeight: 24 },
   caption: { fontSize: 13, fontWeight: '400' as const, lineHeight: 20 },
   label: { fontSize: 12, fontWeight: '600' as const, lineHeight: 18 },
   button: { fontSize: 16, fontWeight: '600' as const },
 };
 
-export const PalaceSpacing = {
-  xs: 4,
-  sm: 8,
-  md: 16,
-  lg: 24,
-  xl: 32,
-  xxl: 48,
-};
+export const PalaceSpacing = { xs: 4, sm: 8, md: 16, lg: 24, xl: 32, xxl: 48 };
 
-export const PalaceRadius = {
-  sm: 8,
-  md: 12,
-  lg: 16,
-  xl: 24,
-  full: 999,
-};
+export const PalaceRadius = { sm: Radius.sm, md: Radius.md, lg: Radius.lg, xl: Radius.xl, full: Radius.full };
 
-export const PalaceShadow = {
-  card: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  glow: {
-    shadowColor: '#7C3AED',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-};
+export const PalaceShadow = { card: Shadow.card, glow: Shadow.raised };

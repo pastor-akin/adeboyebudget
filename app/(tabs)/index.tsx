@@ -1,538 +1,353 @@
-import { useState, useEffect, useCallback } from 'react';
-import {
-  View, Text, StyleSheet, FlatList, TouchableOpacity,
-  TextInput, ScrollView, ActivityIndicator, KeyboardAvoidingView,
-  Platform, RefreshControl,
-} from 'react-native';
+/*
+ * Home — the household dashboard the app opens to: who's here, how much is
+ * left to spend this month, who spent what, which budgets need watching,
+ * and the latest activity from both partners.
+ */
+import { useCallback, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { Image } from 'expo-image';
-import * as Haptics from 'expo-haptics';
-import * as ImagePicker from 'expo-image-picker';
+import { useFocusEffect, useRouter } from 'expo-router';
 import {
-  supabase, Expense, BudgetLimit, AppCategory, Category,
-  addExpense, deleteExpense, updateExpense, getExpenses, getBudgets,
-  getCategories, addCategory, uploadReceipt, toMonthKey, formatMonthLabel,
+  supabase, Expense, Income, AppCategory, BudgetLimit,
+  getExpenses, getIncome, getBudgets, getCategories, toMonthKey, formatMonthLabel,
 } from '../../services/supabase';
-import { Colors, COLOR_OPTIONS, EMOJI_OPTIONS } from '../../constants/theme';
+import { Colors, Radius, Shadow, CategoryColors } from '../../constants/theme';
+import { Avatar, AvatarStack, MonthSwitcher, IconButton, displayName, dayLabel, money, ui } from '../../components/ui';
 
-export default function ExpensesScreen() {
+type FeedItem =
+  | { kind: 'expense'; id: string; date: string; created_at: string; amount: number; who?: string; title: string; sub: string; emoji: string; color: string }
+  | { kind: 'income'; id: string; date: string; created_at: string; amount: number; who?: string; title: string; sub: string };
+
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+
+export default function HomeScreen() {
+  const router = useRouter();
   const [monthKey, setMonthKey] = useState(toMonthKey());
-  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
   const [userName, setUserName] = useState('');
-
-  const [modalBudgets, setModalBudgets] = useState<BudgetLimit[]>([]);
-  const [modalExpenses, setModalExpenses] = useState<Expense[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [income, setIncome] = useState<Income[]>([]);
+  const [budgets, setBudgets] = useState<BudgetLimit[]>([]);
   const [categories, setCategories] = useState<AppCategory[]>([]);
-  const [modalLoading, setModalLoading] = useState(false);
-
-  const [amount, setAmount] = useState('');
-  const [category, setCategory] = useState<Category>('Gas');
-  const [note, setNote] = useState('');
-  const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
-  const [receiptUri, setReceiptUri] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  // Set when the Add-Expense form is opened for an existing expense instead
-  // of a brand-new one — same form, but handleSave updates this row in
-  // place rather than inserting a new one.
-  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
-
-  const [showNewCat, setShowNewCat] = useState(false);
-  const [newCatName, setNewCatName] = useState('');
-  const [newCatEmoji, setNewCatEmoji] = useState('📦');
-  const [newCatColor, setNewCatColor] = useState(COLOR_OPTIONS[0]);
-  const [savingCat, setSavingCat] = useState(false);
-
-  // In-app confirm/info dialog. React Native's Alert.alert silently does
-  // nothing on web (react-native-web doesn't implement it), so every confirm
-  // step here — deleting an expense, choosing a receipt source, error
-  // messages — used to just fail quietly when this screen was opened in a
-  // browser. This dialog works identically on native and web.
-  const [confirmDialog, setConfirmDialog] = useState<{ title: string; message: string; confirmLabel: string; onConfirm: () => void } | null>(null);
-  const [infoDialog, setInfoDialog] = useState<{ title: string; message?: string } | null>(null);
-  const showAlert = (title: string, message?: string) => setInfoDialog({ title, message });
-  const showConfirm = (title: string, message: string, onConfirm: () => void, confirmLabel: string = 'Delete') =>
-    setConfirmDialog({ title, message, confirmLabel, onConfirm });
-
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      setUserName(user?.email?.split('@')[0] ?? 'You');
-    });
-  }, []);
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const data = await getExpenses(monthKey);
-      setExpenses(data);
-    } catch (e: any) {
-      showAlert('Error', e.message);
+      const [{ data: { user } }, exps, inc, buds, cats] = await Promise.all([
+        supabase.auth.getUser(), getExpenses(monthKey), getIncome(monthKey), getBudgets(monthKey), getCategories(),
+      ]);
+      setUserName(user?.email?.split('@')[0] ?? '');
+      setExpenses(exps); setIncome(inc); setBudgets(buds); setCategories(cats);
+    } catch {
+      // keep whatever was shown before; pull to refresh retries
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setLoading(false); setRefreshing(false);
     }
   }, [monthKey]);
 
-  useEffect(() => { setLoading(true); load(); }, [load]);
-
-  useEffect(() => {
-    if (!showAdd) return;
-    setModalLoading(true);
-    Promise.all([
-      getCategories(),
-      getBudgets(toMonthKey()),
-      getExpenses(toMonthKey()),
-    ])
-      .then(([cats, budgets, exps]) => {
-        setCategories(cats);
-        setModalBudgets(budgets);
-        setModalExpenses(exps);
-        if (cats.length > 0 && !cats.find(c => c.name === category)) {
-          setCategory(cats[0].name);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setModalLoading(false));
-  }, [showAdd]);
-
-  function budgetFor(cat: Category): number {
-    return modalBudgets.find(b => b.category === cat && b.frequency === 'monthly')?.amount ?? 0;
-  }
-  function spentFor(cat: Category): number {
-    return modalExpenses.filter(e => e.category === cat).reduce((s, e) => s + e.amount, 0);
-  }
-  function remainingFor(cat: Category): number | null {
-    const limit = budgetFor(cat);
-    if (limit <= 0) return null;
-    return limit - spentFor(cat);
-  }
-
-  const enteredAmount = parseFloat(amount) || 0;
-  const remaining = remainingFor(category);
-  const isOverBudget = remaining !== null && enteredAmount > remaining;
-  const selectedCat = categories.find(c => c.name === category);
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
   function changeMonth(delta: number) {
-    const [year, mon] = monthKey.split('-').map(Number);
-    setMonthKey(toMonthKey(new Date(year, mon - 1 + delta, 1)));
+    const [y, m] = monthKey.split('-').map(Number);
+    setLoading(true);
+    setMonthKey(toMonthKey(new Date(y, m - 1 + delta, 1)));
   }
 
-  async function pickReceipt() {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') { showAlert('Permission needed', 'Allow photo access.'); return; }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7, allowsEditing: true });
-    if (!result.canceled) setReceiptUri(result.assets[0].uri);
-  }
+  // ── numbers ──────────────────────────────────────────────────────────────
+  const spent = expenses.reduce((s, e) => s + Number(e.amount), 0);
+  const received = income.reduce((s, i) => s + Number(i.amount), 0);
+  const monthlyRows = budgets.filter(b => b.frequency === 'monthly' && b.month === monthKey);
+  const yearlyRows = budgets.filter(b => b.frequency === 'yearly');
+  const budgetByCat: Record<string, number> = {};
+  if (monthlyRows.length > 0) for (const b of monthlyRows) budgetByCat[b.category] = Number(b.amount);
+  else for (const b of yearlyRows) budgetByCat[b.category] = Number(b.amount) / 12;
+  const monthBudget = Object.values(budgetByCat).reduce((s, v) => s + v, 0);
+  const left = monthBudget - spent;
+  const pct = monthBudget > 0 ? Math.min(1, spent / monthBudget) : 0;
 
-  async function takeReceiptPhoto() {
-    const { status } = await ImagePicker.requestCameraPermissionsAsync();
-    if (status !== 'granted') { showAlert('Permission needed', 'Allow camera access.'); return; }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.7, allowsEditing: true });
-    if (!result.canceled) setReceiptUri(result.assets[0].uri);
-  }
+  const [y, m] = monthKey.split('-').map(Number);
+  const isCurrentMonth = monthKey === toMonthKey();
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const daysLeft = isCurrentMonth ? daysInMonth - new Date().getDate() + 1 : 0;
 
-  function closeExpenseForm() {
-    setShowAdd(false);
-    setEditingExpense(null);
-    setAmount(''); setNote(''); setReceiptUri(null);
-    setDate(new Date().toISOString().split('T')[0]);
-  }
+  // who's in the household (from this month's activity + the signed-in user)
+  const people: string[] = [];
+  const addPerson = (n?: string) => { const k = (n ?? '').trim(); if (k && !people.some(p => p.toLowerCase() === k.toLowerCase())) people.push(k); };
+  addPerson(userName);
+  for (const e of expenses) addPerson(e.added_by_name);
+  for (const i of income) addPerson(i.added_by_name);
+  const spentBy = people.map(p => ({
+    name: p,
+    amount: expenses.filter(e => (e.added_by_name ?? '').toLowerCase() === p.toLowerCase()).reduce((s, e) => s + Number(e.amount), 0),
+  }));
 
-  function openNewExpense() {
-    setEditingExpense(null);
-    setAmount(''); setNote(''); setReceiptUri(null);
-    setDate(new Date().toISOString().split('T')[0]);
-    setShowAdd(true);
-  }
+  // categories to watch: the ones with a budget, most used first
+  const catInfo = (name: string) => {
+    const c = categories.find(x => x.name === name);
+    return { emoji: c?.emoji ?? '📦', color: c?.color ?? CategoryColors[name] ?? '#64748B' };
+  };
+  const spentByCat: Record<string, number> = {};
+  for (const e of expenses) spentByCat[e.category] = (spentByCat[e.category] ?? 0) + Number(e.amount);
+  const watch = Object.keys({ ...budgetByCat, ...spentByCat })
+    .map(name => ({ name, budget: budgetByCat[name] ?? 0, spent: spentByCat[name] ?? 0 }))
+    .filter(r => r.spent > 0)
+    .sort((a, b) => {
+      const ra = a.budget > 0 ? a.spent / a.budget : 0, rb = b.budget > 0 ? b.spent / b.budget : 0;
+      return rb - ra || b.spent - a.spent;
+    })
+    .slice(0, 4);
 
-  function openEditExpense(item: Expense) {
-    setEditingExpense(item);
-    setAmount(String(item.amount));
-    setCategory(item.category);
-    setNote(item.note ?? '');
-    setDate(item.date);
-    setReceiptUri(item.receipt_url ?? null);
-    setShowAdd(true);
-  }
+  const feed: FeedItem[] = [
+    ...expenses.map(e => {
+      const ci = catInfo(e.category);
+      const note = (e.note ?? '').split(' | ')[0];
+      return { kind: 'expense' as const, id: e.id, date: e.date, created_at: e.created_at, amount: Number(e.amount), who: e.added_by_name, title: note || e.category, sub: note ? e.category : '', emoji: ci.emoji, color: ci.color };
+    }),
+    ...income.map(i => ({ kind: 'income' as const, id: i.id, date: i.date, created_at: i.created_at, amount: Number(i.amount), who: i.added_by_name, title: i.name || 'Income', sub: i.source || '' })),
+  ].sort((a, b) => (a.date === b.date ? (a.created_at < b.created_at ? 1 : -1) : a.date < b.date ? 1 : -1)).slice(0, 6);
 
-  async function handleSave() {
-    const num = parseFloat(amount);
-    if (!amount || isNaN(num) || num <= 0) { showAlert('Invalid amount', 'Enter a valid dollar amount.'); return; }
-    setSaving(true);
-    try {
-      // receiptUri holds either the existing remote receipt_url (unchanged),
-      // a freshly-picked local file:// uri (needs uploading), or null
-      // (removed). Only upload when it's actually a new local file.
-      let receipt_url: string | null | undefined = receiptUri;
-      if (receiptUri && receiptUri !== editingExpense?.receipt_url) {
-        receipt_url = await uploadReceipt(receiptUri);
-      }
-      if (editingExpense) {
-        const updated = await updateExpense(editingExpense.id, {
-          date, amount: num, category, note: note.trim() || undefined, receipt_url,
-        });
-        setExpenses(prev => prev.map(e => (e.id === updated.id ? updated : e)));
-      } else {
-        await addExpense({ date, amount: num, category, note: note.trim() || undefined, added_by_name: userName, receipt_url: receipt_url ?? undefined });
-      }
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      closeExpenseForm();
-      load();
-    } catch (e: any) {
-      showAlert('Error', e.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function handleDelete(expense: Expense) {
-    showConfirm(
-      'Delete expense?',
-      `$${expense.amount.toFixed(2)} · ${expense.category}${expense.note ? ` · ${expense.note}` : ''}`,
-      async () => {
-        try {
-          await deleteExpense(expense.id);
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-          load();
-        } catch (e: any) {
-          showAlert('Error', e.message);
-        }
-      },
-    );
-  }
-
-  async function handleAddCategory() {
-    if (!newCatName.trim()) { showAlert('Name required', 'Enter a category name.'); return; }
-    const trimmed = newCatName.trim();
-    const duplicate = categories.find(c => c.name.trim().toLowerCase() === trimmed.toLowerCase());
-    if (duplicate) {
-      showAlert('Category already exists', `"${duplicate.name}" is already in your list — pick it below instead of adding a duplicate.`);
-      return;
-    }
-    setSavingCat(true);
-    try {
-      await addCategory(trimmed, newCatEmoji, newCatColor);
-      const cats = await getCategories();
-      setCategories(cats);
-      setCategory(trimmed);
-      setShowNewCat(false);
-      setNewCatName(''); setNewCatEmoji('📦'); setNewCatColor(COLOR_OPTIONS[0]);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-    } catch (e: any) {
-      showAlert('Error', e.message);
-    } finally {
-      setSavingCat(false);
-    }
-  }
-
-  const total = expenses.reduce((sum, e) => sum + e.amount, 0);
-
-  const DialogOverlay = confirmDialog || infoDialog ? (
-    <View style={styles.dialogOverlay}>
-      <View style={styles.dialogBox}>
-        <Text style={styles.modalTitle}>{(confirmDialog ?? infoDialog)!.title}</Text>
-        {(confirmDialog ?? infoDialog)!.message ? (
-          <Text style={styles.dialogMessage}>{(confirmDialog ?? infoDialog)!.message}</Text>
-        ) : null}
-        {confirmDialog ? (
-          <View style={[styles.modalActions, { marginBottom: 0 }]}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setConfirmDialog(null)}>
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.saveBtn, confirmDialog.confirmLabel === 'Delete' && styles.dangerBtn]}
-              onPress={() => { const fn = confirmDialog.onConfirm; setConfirmDialog(null); fn(); }}
-            >
-              <Text style={styles.saveText}>{confirmDialog.confirmLabel}</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <TouchableOpacity style={[styles.saveBtn, { marginTop: 4 }]} onPress={() => setInfoDialog(null)}>
-            <Text style={styles.saveText}>OK</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-    </View>
-  ) : null;
+  const firstName = userName ? displayName(userName) : '';
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => changeMonth(-1)} style={styles.navBtn}>
-          <Ionicons name="chevron-back" size={22} color={Colors.text} />
-        </TouchableOpacity>
-        <View style={styles.headerCenter}>
-          <Text style={styles.monthLabel}>{formatMonthLabel(monthKey)}</Text>
-          <Text style={styles.totalLabel}>${total.toFixed(2)} spent</Text>
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 40 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
+      >
+        {/* Greeting */}
+        <View style={styles.topRow}>
+          <AvatarStack names={people.length ? people : [userName || '?']} />
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={styles.hello}>{greeting()}{firstName ? `, ${firstName}` : ''}</Text>
+            <Text style={styles.household}>
+              {people.length > 1 ? `${people.map(displayName).join(' & ')}'s budget` : 'Your household budget'}
+            </Text>
+          </View>
+          <IconButton icon="log-out-outline" label="Sign out" onPress={() => setConfirmSignOut(true)} />
         </View>
-        <TouchableOpacity onPress={() => changeMonth(1)} style={styles.navBtn}>
-          <Ionicons name="chevron-forward" size={22} color={Colors.text} />
-        </TouchableOpacity>
-      </View>
 
-      {loading ? (
-        <ActivityIndicator color={Colors.primary} style={{ marginTop: 40 }} />
-      ) : (
-        <FlatList
-          data={expenses}
-          keyExtractor={e => e.id}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} tintColor={Colors.primary} />}
-          contentContainerStyle={expenses.length === 0 ? styles.empty : { paddingBottom: 100 }}
-          ListEmptyComponent={
-            <View style={styles.emptyContainer}>
-              <Text style={styles.emptyEmoji}>📭</Text>
-              <Text style={styles.emptyText}>No expenses this month</Text>
-              <Text style={styles.emptySubtext}>Tap + to add one</Text>
-            </View>
-          }
-          renderItem={({ item }) => {
-            const cat = categories.find(c => c.name === item.category);
-            return (
-              <View style={styles.row}>
-                <TouchableOpacity style={styles.rowTapArea} onPress={() => openEditExpense(item)} activeOpacity={0.7}>
-                  <View style={[styles.catDot, { backgroundColor: cat?.color ?? Colors.surfaceHigh }]}>
-                    <Text style={styles.catEmoji}>{cat?.emoji ?? '📦'}</Text>
+        <MonthSwitcher label={formatMonthLabel(monthKey)} onPrev={() => changeMonth(-1)} onNext={() => changeMonth(1)} style={{ marginTop: 6, marginBottom: 16 }} />
+
+        {loading ? <ActivityIndicator color={Colors.primary} style={{ marginTop: 60 }} /> : (
+          <>
+            {/* Hero */}
+            <View style={styles.hero}>
+              <Text style={styles.heroLabel}>{monthBudget > 0 ? (left >= 0 ? 'Left to spend' : 'Over budget by') : 'Spent this month'}</Text>
+              <Text style={styles.heroValue}>{money(monthBudget > 0 ? Math.abs(left) : spent, { cents: false })}</Text>
+              {monthBudget > 0 ? (
+                <>
+                  <View style={styles.heroTrack}>
+                    <View style={[styles.heroFill, { width: `${pct * 100}%` as any, backgroundColor: left < 0 ? '#FFB4A6' : '#FFFFFF' }]} />
                   </View>
-                  <View style={styles.rowInfo}>
-                    <Text style={styles.rowCategory} numberOfLines={1}>{item.category}</Text>
-                    <Text style={styles.rowMeta} numberOfLines={1}>
-                      {item.date}{item.added_by_name ? ` · ${item.added_by_name}` : ''}{item.note ? ` · ${item.note}` : ''}
-                    </Text>
-                  </View>
-                  {item.receipt_url && <Image source={{ uri: item.receipt_url }} style={styles.receiptThumb} contentFit="cover" />}
-                  <Text style={styles.rowAmount}>${item.amount.toFixed(2)}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.rowDeleteBtn} onPress={() => handleDelete(item)} hitSlop={8}>
-                  <Ionicons name="trash-outline" size={16} color={Colors.textSecondary} />
-                </TouchableOpacity>
+                  <Text style={styles.heroSub}>
+                    {money(spent, { cents: false })} of {money(monthBudget, { cents: false })} spent
+                    {isCurrentMonth && daysLeft > 0 ? ` · ${daysLeft} day${daysLeft === 1 ? '' : 's'} left` : ''}
+                  </Text>
+                </>
+              ) : (
+                <Text style={styles.heroSub}>Set budgets to see what's left each month.</Text>
+              )}
+              <View style={styles.heroStats}>
+                <View style={styles.heroStat}>
+                  <Text style={styles.heroStatLabel}>Income</Text>
+                  <Text style={styles.heroStatValue}>{money(received, { cents: false })}</Text>
+                </View>
+                <View style={styles.heroDivider} />
+                <View style={styles.heroStat}>
+                  <Text style={styles.heroStatLabel}>Spent</Text>
+                  <Text style={styles.heroStatValue}>{money(spent, { cents: false })}</Text>
+                </View>
+                <View style={styles.heroDivider} />
+                <View style={styles.heroStat}>
+                  <Text style={styles.heroStatLabel}>Net</Text>
+                  <Text style={styles.heroStatValue}>{money(received - spent, { cents: false })}</Text>
+                </View>
               </View>
-            );
-          }}
-        />
-      )}
+            </View>
 
-      <TouchableOpacity style={styles.fab} onPress={openNewExpense}>
-        <Ionicons name="add" size={28} color="#fff" />
-      </TouchableOpacity>
+            {/* Quick actions */}
+            <View style={styles.actions}>
+              {([
+                { icon: 'remove-circle', label: 'Expense', color: Colors.expense, go: () => router.push({ pathname: '/expenses', params: { add: '1' } }) },
+                { icon: 'add-circle', label: 'Income', color: Colors.income, go: () => router.push({ pathname: '/income', params: { add: '1' } }) },
+                { icon: 'pie-chart', label: 'Budgets', color: Colors.partnerA, go: () => router.push('/budgets') },
+                { icon: 'document-text', label: 'Report', color: Colors.warning, go: () => router.push('/export') },
+              ] as const).map(a => (
+                <Pressable key={a.label} style={styles.action} onPress={a.go}>
+                  <View style={[styles.actionIcon, { backgroundColor: a.color + '1A' }]}>
+                    <Ionicons name={a.icon} size={24} color={a.color} />
+                  </View>
+                  <Text style={styles.actionLabel}>{a.label}</Text>
+                </Pressable>
+              ))}
+            </View>
 
-      {/* Add Expense — a plain full-screen overlay instead of RN's <Modal>.
-          <Modal> renders in its own top-level layer on web, which sat above
-          the in-app dialog below and made warnings (like the duplicate-name
-          check) render invisibly behind it. A regular sibling view keeps
-          everything in one predictable stacking order. */}
-      {showAdd ? (
-      <View style={styles.modalRoot}>
-        <KeyboardAvoidingView style={styles.modal} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-            <View style={styles.modalHandle} />
-            <Text style={styles.modalTitle}>{editingExpense ? 'Edit Expense' : 'Add Expense'}</Text>
-
-            <Text style={styles.label}>Amount</Text>
-            <TextInput
-              style={[styles.amountInput, isOverBudget && styles.amountInputOver]}
-              placeholder="$0.00"
-              placeholderTextColor={Colors.textSecondary}
-              value={amount}
-              onChangeText={setAmount}
-              keyboardType="decimal-pad"
-              autoFocus
-            />
-
-            <Text style={styles.label}>Category</Text>
-            {modalLoading ? (
-              <ActivityIndicator color={Colors.primary} style={{ marginBottom: 16 }} />
-            ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow} contentContainerStyle={{ gap: 8, paddingRight: 8 }}>
-                {categories.map(cat => {
-                  const isSelected = category === cat.name;
-                  return (
-                    <TouchableOpacity
-                      key={cat.name}
-                      style={[styles.chip, isSelected && { borderColor: cat.color, backgroundColor: cat.color + '22' }]}
-                      onPress={() => setCategory(cat.name)}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={styles.chipEmoji}>{cat.emoji}</Text>
-                      <Text style={[styles.chipName, isSelected && { color: cat.color }]} numberOfLines={1}>{cat.name}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-                <TouchableOpacity style={[styles.chip, styles.chipAdd]} onPress={() => setShowNewCat(true)}>
-                  <Ionicons name="add" size={16} color={Colors.textSecondary} />
-                  <Text style={styles.chipAddText}>New</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            )}
-
-            {/* One place for budget status — instead of showing spent/remaining
-                on every category chip (the old grid), only the selected
-                category's balance is shown here, right below the amount
-                you're about to log against it. */}
-            {selectedCat && remaining !== null ? (
-              <View style={[styles.balanceCallout, remaining < 0 && styles.balanceCalloutOver]}>
-                <Ionicons name={remaining < 0 ? 'warning-outline' : 'wallet-outline'} size={16} color={remaining < 0 ? Colors.error : Colors.primary} style={{ marginRight: 6 }} />
-                <Text style={[styles.balanceCalloutText, remaining < 0 && { color: Colors.error }]}>
-                  {selectedCat.emoji} {category}: ${spentFor(category).toFixed(2)} of ${budgetFor(category).toFixed(2)} this month
-                  {remaining < 0 ? ` · Over by $${Math.abs(remaining).toFixed(2)}` : ` · $${remaining.toFixed(2)} left`}
-                </Text>
+            {/* Who spent what */}
+            {spent > 0 && spentBy.length > 0 ? (
+              <View style={styles.section}>
+                <Text style={ui.sectionTitle}>Who spent what</Text>
+                <View style={[ui.card, styles.cardPad, { gap: 14 }]}>
+                  {spentBy.map(p => (
+                    <View key={p.name} style={styles.personRow}>
+                      <Avatar name={p.name} size={36} />
+                      <View style={{ flex: 1, gap: 6 }}>
+                        <View style={styles.rowBetween}>
+                          <Text style={styles.personName}>{displayName(p.name)}</Text>
+                          <Text style={styles.personAmt}>{money(p.amount)}</Text>
+                        </View>
+                        <View style={styles.track}>
+                          <View style={[styles.fill, { width: `${spent > 0 ? (p.amount / spent) * 100 : 0}%` as any, backgroundColor: Colors.primary }]} />
+                        </View>
+                      </View>
+                    </View>
+                  ))}
+                </View>
               </View>
             ) : null}
-            {isOverBudget && remaining !== null && (
-              <Text style={styles.overBudgetWarning}>
-                ⚠️ This ${enteredAmount.toFixed(2)} would put you ${(enteredAmount - remaining).toFixed(2)} over budget in {category}
-              </Text>
-            )}
 
-            <Text style={styles.label}>Date</Text>
-            <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder="YYYY-MM-DD" placeholderTextColor={Colors.textSecondary} />
-
-            <Text style={styles.label}>Note (optional)</Text>
-            <TextInput style={styles.input} value={note} onChangeText={setNote} placeholder="What was it for?" placeholderTextColor={Colors.textSecondary} />
-
-            <Text style={styles.label}>Receipt (optional)</Text>
-            {receiptUri ? (
-              <View style={styles.receiptPreviewWrap}>
-                <Image source={{ uri: receiptUri }} style={styles.receiptPreview} contentFit="cover" />
-                <TouchableOpacity style={styles.removeReceipt} onPress={() => setReceiptUri(null)}>
-                  <Ionicons name="close-circle" size={22} color={Colors.error} />
-                </TouchableOpacity>
+            {/* Budgets to watch */}
+            {watch.length > 0 ? (
+              <View style={styles.section}>
+                <View style={styles.rowBetween}>
+                  <Text style={ui.sectionTitle}>Budgets to watch</Text>
+                  <Pressable onPress={() => router.push('/budgets')} hitSlop={8}><Text style={styles.link}>See all</Text></Pressable>
+                </View>
+                <View style={[ui.card, styles.cardPad, { gap: 16 }]}>
+                  {watch.map(w => {
+                    const ci = catInfo(w.name);
+                    const over = w.budget > 0 && w.spent > w.budget;
+                    const ratio = w.budget > 0 ? Math.min(1, w.spent / w.budget) : 0;
+                    return (
+                      <View key={w.name} style={styles.personRow}>
+                        <View style={[styles.catCircle, { backgroundColor: ci.color + '22' }]}><Text style={{ fontSize: 18 }}>{ci.emoji}</Text></View>
+                        <View style={{ flex: 1, gap: 6 }}>
+                          <View style={styles.rowBetween}>
+                            <Text style={styles.personName} numberOfLines={1}>{w.name}</Text>
+                            <Text style={[styles.watchAmt, over && { color: Colors.error }]}>
+                              {money(w.spent, { cents: false })}{w.budget > 0 ? <Text style={styles.watchOf}> / {money(w.budget, { cents: false })}</Text> : null}
+                            </Text>
+                          </View>
+                          {w.budget > 0 ? (
+                            <View style={styles.track}>
+                              <View style={[styles.fill, { width: `${ratio * 100}%` as any, backgroundColor: over ? Colors.error : ratio > 0.85 ? Colors.warning : ci.color }]} />
+                            </View>
+                          ) : <Text style={styles.noBudget}>No budget set</Text>}
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
               </View>
-            ) : (
-              <View style={styles.receiptBtnRow}>
-                <TouchableOpacity style={styles.receiptBtn} onPress={takeReceiptPhoto}>
-                  <Ionicons name="camera-outline" size={18} color={Colors.textSecondary} style={{ marginRight: 6 }} />
-                  <Text style={styles.receiptBtnText}>Camera</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.receiptBtn} onPress={pickReceipt}>
-                  <Ionicons name="image-outline" size={18} color={Colors.textSecondary} style={{ marginRight: 6 }} />
-                  <Text style={styles.receiptBtnText}>Library</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+            ) : null}
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={closeExpenseForm}>
-                <Text style={styles.cancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving}>
-                {saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>{editingExpense ? 'Save' : 'Add'}</Text>}
-              </TouchableOpacity>
+            {/* Recent activity */}
+            <View style={styles.section}>
+              <View style={styles.rowBetween}>
+                <Text style={ui.sectionTitle}>Recent activity</Text>
+                <Pressable onPress={() => router.push('/expenses')} hitSlop={8}><Text style={styles.link}>See all</Text></Pressable>
+              </View>
+              <View style={[ui.card, { paddingVertical: 4 }]}>
+                {feed.length === 0 ? (
+                  <View style={{ alignItems: 'center', padding: 28, gap: 6 }}>
+                    <Text style={{ fontSize: 34 }}>🌱</Text>
+                    <Text style={styles.personName}>Nothing logged yet</Text>
+                    <Text style={styles.noBudget}>Add an expense or income to get started.</Text>
+                  </View>
+                ) : feed.map((f, idx) => (
+                  <View key={f.kind + f.id} style={[styles.feedRow, idx > 0 && styles.feedDivider]}>
+                    <View>
+                      {f.kind === 'expense' ? (
+                        <View style={[styles.catCircle, { backgroundColor: f.color + '22' }]}><Text style={{ fontSize: 18 }}>{f.emoji}</Text></View>
+                      ) : (
+                        <View style={[styles.catCircle, { backgroundColor: Colors.income + '1F' }]}><Ionicons name="arrow-down" size={18} color={Colors.income} /></View>
+                      )}
+                      {f.who ? <View style={styles.feedAvatar}><Avatar name={f.who} size={18} ring /></View> : null}
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.feedTitle} numberOfLines={1}>{f.title}</Text>
+                      <Text style={styles.feedSub} numberOfLines={1}>{[dayLabel(f.date), f.sub, f.who ? displayName(f.who) : ''].filter(Boolean).join(' · ')}</Text>
+                    </View>
+                    <Text style={[styles.feedAmt, { color: f.kind === 'income' ? Colors.income : Colors.text }]}>
+                      {f.kind === 'income' ? '+' : '−'}{money(f.amount)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
             </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
-      </View>
-      ) : null}
+          </>
+        )}
+      </ScrollView>
 
-      {/* New Category — same reasoning as above: plain overlay, not <Modal>. */}
-      {showNewCat ? (
-      <View style={styles.modalRoot}>
-        <KeyboardAvoidingView style={styles.modal} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>New Category</Text>
-          <View style={[styles.catPreview, { backgroundColor: newCatColor + '22', borderColor: newCatColor }]}>
-            <Text style={styles.catPreviewEmoji}>{newCatEmoji}</Text>
-            <Text style={[styles.catPreviewName, { color: newCatColor }]}>{newCatName || 'Category Name'}</Text>
+      {confirmSignOut ? (
+        <View style={styles.overlay}>
+          <View style={styles.dialog}>
+            <Text style={styles.dialogTitle}>Sign out?</Text>
+            <Text style={styles.dialogMsg}>You'll need your email and password to sign back in.</Text>
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 18 }}>
+              <Pressable style={[styles.dialogBtn, { backgroundColor: Colors.surfaceHigh }]} onPress={() => setConfirmSignOut(false)}>
+                <Text style={[styles.dialogBtnText, { color: Colors.text }]}>Cancel</Text>
+              </Pressable>
+              <Pressable style={[styles.dialogBtn, { backgroundColor: Colors.primary }]} onPress={() => { setConfirmSignOut(false); supabase.auth.signOut(); }}>
+                <Text style={styles.dialogBtnText}>Sign out</Text>
+              </Pressable>
+            </View>
           </View>
-          <Text style={styles.label}>Name</Text>
-          <TextInput style={styles.input} value={newCatName} onChangeText={setNewCatName} placeholder="e.g. Gym, Pet Food..." placeholderTextColor={Colors.textSecondary} autoFocus />
-          <Text style={styles.label}>Emoji</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 20 }}>
-            {EMOJI_OPTIONS.map(e => (
-              <TouchableOpacity key={e} style={[styles.emojiOption, newCatEmoji === e && { backgroundColor: Colors.primary + '33', borderColor: Colors.primary }]} onPress={() => setNewCatEmoji(e)}>
-                <Text style={{ fontSize: 22 }}>{e}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-          <Text style={styles.label}>Color</Text>
-          <View style={styles.colorGrid}>
-            {COLOR_OPTIONS.map(c => (
-              <TouchableOpacity key={c} style={[styles.colorDot, { backgroundColor: c }, newCatColor === c && styles.colorDotSelected]} onPress={() => setNewCatColor(c)} />
-            ))}
-          </View>
-          <View style={[styles.modalActions, { marginTop: 24 }]}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowNewCat(false)}>
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.saveBtn} onPress={handleAddCategory} disabled={savingCat}>
-              {savingCat ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveText}>Add Category</Text>}
-            </TouchableOpacity>
-          </View>
-        </KeyboardAvoidingView>
-      </View>
+        </View>
       ) : null}
-
-      {DialogOverlay}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  navBtn: { padding: 8 },
-  headerCenter: { alignItems: 'center' },
-  monthLabel: { fontSize: 17, fontWeight: '700', color: Colors.text },
-  totalLabel: { fontSize: 13, color: Colors.primary, marginTop: 2 },
-  row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border, gap: 10 },
-  rowTapArea: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  catDot: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
-  catEmoji: { fontSize: 18 },
-  rowInfo: { flex: 1 },
-  rowCategory: { fontSize: 14.5, fontWeight: '600', color: Colors.text },
-  rowMeta: { fontSize: 11.5, color: Colors.textSecondary, marginTop: 2 },
-  rowAmount: { fontSize: 15, fontWeight: '700', color: Colors.text },
-  rowDeleteBtn: { padding: 4 },
-  receiptThumb: { width: 28, height: 28, borderRadius: 6 },
-  empty: { flex: 1 },
-  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 100 },
-  emptyEmoji: { fontSize: 48, marginBottom: 12 },
-  emptyText: { fontSize: 17, fontWeight: '600', color: Colors.text },
-  emptySubtext: { fontSize: 14, color: Colors.textSecondary, marginTop: 6 },
-  fab: { position: 'absolute', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: Colors.primary, justifyContent: 'center', alignItems: 'center', shadowColor: Colors.primary, shadowOpacity: 0.5, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 8 },
-  modalRoot: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 },
-  modal: { flex: 1, backgroundColor: Colors.background, paddingHorizontal: 20, paddingTop: 12 },
-  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center', marginBottom: 20 },
-  modalTitle: { fontSize: 22, fontWeight: '700', color: Colors.text, marginBottom: 20 },
-  label: { fontSize: 12, fontWeight: '700', color: Colors.textSecondary, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.8 },
-  amountInput: { fontSize: 36, fontWeight: '700', color: Colors.text, backgroundColor: Colors.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 16, marginBottom: 20, borderWidth: 2, borderColor: 'transparent' },
-  amountInputOver: { borderColor: Colors.error, color: Colors.error },
-  overBudgetWarning: { fontSize: 13, color: Colors.error, fontWeight: '600', marginTop: -8, marginBottom: 16, paddingHorizontal: 4 },
-  // category chips — a compact horizontal scroller replaces the old 2-column
-  // grid that repeated each category's budget balance on every tile; that
-  // info now lives in one place (balanceCallout) for the selected category.
-  chipRow: { marginBottom: 12 },
-  chip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.surface, borderRadius: 20, borderWidth: 2, borderColor: 'transparent', paddingHorizontal: 14, paddingVertical: 9 },
-  chipAdd: { borderColor: Colors.border, borderStyle: 'dashed' },
-  chipEmoji: { fontSize: 16 },
-  chipName: { fontSize: 13.5, fontWeight: '700', color: Colors.text },
-  chipAddText: { fontSize: 13.5, fontWeight: '600', color: Colors.textSecondary },
-  balanceCallout: { flexDirection: 'row', alignItems: 'center', backgroundColor: Colors.primary + '1A', borderRadius: 10, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: Colors.primary + '44' },
-  balanceCalloutOver: { backgroundColor: Colors.error + '1A', borderColor: Colors.error + '44' },
-  balanceCalloutText: { flex: 1, fontSize: 13, color: Colors.primary, fontWeight: '500', lineHeight: 18 },
-  input: { backgroundColor: Colors.surface, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: Colors.text, marginBottom: 20, borderWidth: 1, borderColor: Colors.border },
-  receiptBtnRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
-  receiptBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.surface, borderRadius: 12, borderWidth: 1, borderColor: Colors.border, borderStyle: 'dashed', paddingHorizontal: 12, paddingVertical: 14 },
-  receiptBtnText: { fontSize: 14, color: Colors.textSecondary, fontWeight: '600' },
-  receiptPreviewWrap: { position: 'relative', marginBottom: 20, alignSelf: 'flex-start' },
-  receiptPreview: { width: 120, height: 120, borderRadius: 12 },
-  removeReceipt: { position: 'absolute', top: -8, right: -8 },
-  modalActions: { flexDirection: 'row', gap: 12, marginTop: 8, marginBottom: 32 },
-  cancelBtn: { flex: 1, backgroundColor: Colors.surface, borderRadius: 12, paddingVertical: 16, alignItems: 'center' },
-  cancelText: { color: Colors.textSecondary, fontSize: 16, fontWeight: '600' },
-  saveBtn: { flex: 2, backgroundColor: Colors.primary, borderRadius: 12, paddingVertical: 16, alignItems: 'center' },
-  dangerBtn: { backgroundColor: Colors.error },
-  saveText: { color: '#fff', fontSize: 16, fontWeight: '700' },
-  catPreview: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 14, borderWidth: 2, marginBottom: 20 },
-  catPreviewEmoji: { fontSize: 28 },
-  catPreviewName: { fontSize: 17, fontWeight: '700' },
-  emojiOption: { width: 44, height: 44, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginRight: 8, borderWidth: 2, borderColor: 'transparent', backgroundColor: Colors.surface },
-  colorGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 20 },
-  colorDot: { width: 36, height: 36, borderRadius: 18 },
-  colorDotSelected: { borderWidth: 3, borderColor: Colors.text },
-  // in-app dialog (replaces Alert.alert, which doesn't render on web)
-  dialogOverlay: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  dialogBox: { width: '100%', maxWidth: 400, backgroundColor: Colors.surface, borderRadius: 16, borderWidth: 1, borderColor: Colors.border, padding: 20 },
-  dialogMessage: { fontSize: 13.5, color: Colors.textSecondary, lineHeight: 19, marginTop: -8, marginBottom: 16 },
+  topRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingTop: 14, paddingBottom: 12 },
+  hello: { fontSize: 20, fontWeight: '800', color: Colors.text, letterSpacing: -0.3 },
+  household: { fontSize: 13.5, color: Colors.textSecondary, marginTop: 1 },
+  hero: { marginHorizontal: 16, borderRadius: Radius.xl, backgroundColor: Colors.primary, padding: 22, ...Shadow.raised },
+  heroLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 14, fontWeight: '600' },
+  heroValue: { color: '#fff', fontSize: 44, fontWeight: '800', letterSpacing: -1, marginTop: 2 },
+  heroTrack: { height: 8, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.25)', marginTop: 14, overflow: 'hidden' },
+  heroFill: { height: 8, borderRadius: 4 },
+  heroSub: { color: 'rgba(255,255,255,0.9)', fontSize: 13, marginTop: 8 },
+  heroStats: { flexDirection: 'row', marginTop: 18, backgroundColor: 'rgba(255,255,255,0.14)', borderRadius: Radius.md, paddingVertical: 12 },
+  heroStat: { flex: 1, alignItems: 'center' },
+  heroStatLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: '600' },
+  heroStatValue: { color: '#fff', fontSize: 16, fontWeight: '800', marginTop: 2 },
+  heroDivider: { width: 1, backgroundColor: 'rgba(255,255,255,0.22)' },
+  actions: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, marginTop: 20 },
+  action: { alignItems: 'center', gap: 6, flex: 1 },
+  actionIcon: { width: 56, height: 56, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
+  actionLabel: { fontSize: 12.5, fontWeight: '600', color: Colors.text },
+  section: { paddingHorizontal: 16, marginTop: 24, gap: 10 },
+  cardPad: { padding: 16 },
+  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 4 },
+  link: { color: Colors.primary, fontWeight: '700', fontSize: 13.5 },
+  personRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  personName: { fontSize: 15, fontWeight: '700', color: Colors.text, flexShrink: 1 },
+  personAmt: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  track: { height: 6, borderRadius: 3, backgroundColor: Colors.surfaceHigh, overflow: 'hidden' },
+  fill: { height: 6, borderRadius: 3 },
+  catCircle: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  watchAmt: { fontSize: 14.5, fontWeight: '700', color: Colors.text },
+  watchOf: { fontWeight: '500', color: Colors.textMuted },
+  noBudget: { fontSize: 12.5, color: Colors.textMuted },
+  feedRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 },
+  feedDivider: { borderTopWidth: 1, borderTopColor: Colors.border },
+  feedAvatar: { position: 'absolute', right: -4, bottom: -4 },
+  feedTitle: { fontSize: 15, fontWeight: '600', color: Colors.text },
+  feedSub: { fontSize: 12.5, color: Colors.textSecondary, marginTop: 2 },
+  feedAmt: { fontSize: 15, fontWeight: '700' },
+  overlay: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, backgroundColor: 'rgba(24,32,47,0.4)', alignItems: 'center', justifyContent: 'center', padding: 24 },
+  dialog: { width: '100%', maxWidth: 380, backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: 22 },
+  dialogTitle: { fontSize: 18, fontWeight: '800', color: Colors.text },
+  dialogMsg: { fontSize: 14, color: Colors.textSecondary, marginTop: 6, lineHeight: 20 },
+  dialogBtn: { flex: 1, borderRadius: Radius.full, paddingVertical: 13, alignItems: 'center' },
+  dialogBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
 });

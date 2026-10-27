@@ -295,17 +295,63 @@ export async function getAllExpenses(): Promise<Expense[]> {
   return data ?? [];
 }
 
+/** Normalizes a store name for matching ("  Market  Basket " → "market basket"). */
+export function storeKey(name: string): string {
+  return name.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export interface StoreMemory {
+  /** Store name as it was last typed, e.g. "Market Basket". */
+  name: string;
+  /** The category this store is filed under most often. */
+  category: string;
+  count: number;
+}
+
+/**
+ * Learns which category each store usually goes under, from past expenses.
+ * The store is the expense note (or the "Vendor" half of a "Vendor | Description"
+ * note from the Budgets screen). Most-used category wins; ties go to the most recent.
+ */
+export async function getStoreMemory(): Promise<Record<string, StoreMemory>> {
+  const { data, error } = await supabase
+    .from('budget_expenses')
+    .select('note, category, date')
+    .not('note', 'is', null)
+    .order('date', { ascending: false })
+    .limit(2000);
+  if (error) throw error;
+  const tally: Record<string, { name: string; counts: Record<string, number>; order: string[] }> = {};
+  for (const row of data ?? []) {
+    const store = (row.note ?? '').split(' | ')[0].trim();
+    if (!store || store.length > 60 || !row.category) continue;
+    const key = storeKey(store);
+    const t = (tally[key] ??= { name: store, counts: {}, order: [] });
+    t.counts[row.category] = (t.counts[row.category] ?? 0) + 1;
+    if (!t.order.includes(row.category)) t.order.push(row.category); // newest first
+  }
+  const out: Record<string, StoreMemory> = {};
+  for (const [key, t] of Object.entries(tally)) {
+    const best = t.order.reduce((a, b) => (t.counts[b] > t.counts[a] ? b : a));
+    out[key] = { name: t.name, category: best, count: Object.values(t.counts).reduce((x, y) => x + y, 0) };
+  }
+  return out;
+}
+
 export async function uploadReceipt(localUri: string): Promise<string> {
   const { data: { user } } = await supabase.auth.getUser();
-  const ext = localUri.split('.').pop() ?? 'jpg';
-  const path = `${user?.id}/${Date.now()}.${ext}`;
+  // On the web, photos come back as data:/blob: URIs with no file extension.
+  const dataMime = localUri.startsWith('data:') ? localUri.slice(5, localUri.indexOf(';')) : '';
+  const extMatch = /\.(jpe?g|png|webp|heic|gif)$/i.exec(localUri.split('?')[0]);
+  const ext = dataMime ? (dataMime.split('/')[1] || 'jpg') : (extMatch ? extMatch[1].toLowerCase() : 'jpg');
+  const path = `${user?.id}/${Date.now()}.${ext === 'jpg' ? 'jpg' : ext}`;
 
   const response = await fetch(localUri);
   const blob = await response.blob();
 
   const { error } = await supabase.storage
     .from('receipts')
-    .upload(path, blob, { contentType: `image/${ext}`, upsert: false });
+    .upload(path, blob, { contentType: dataMime || blob.type || `image/${ext === 'jpg' ? 'jpeg' : ext}`, upsert: false });
   if (error) throw error;
 
   const { data, error: urlError } = await supabase.storage
@@ -681,8 +727,9 @@ function escapeHtml(s: string): string {
 
 /**
  * Builds a printable/shareable HTML budget report for one year: a
- * three-stat summary, a per-category budgeted-vs-actual table, and a
- * month-by-month income/expenses/net table. Feed the HTML string to
+ * three-stat summary, a per-category budgeted-vs-actual table, a
+ * month-by-month income/expenses/net table, and the full expense list
+ * (grouped by month, with monthly subtotals). Feed the HTML string to
  * expo-print's printToFileAsync — on native it writes a real PDF file you
  * can then hand to expo-sharing; on web it opens the browser's print
  * dialog, where "Save as PDF" is one of the destinations (expo-print does
@@ -734,6 +781,40 @@ export function buildBudgetReportHtml(params: {
     </tr>`)
     .join('');
 
+  const catEmoji: Record<string, string> = {};
+  for (const c of categories) catEmoji[c.name] = c.emoji;
+  const yearExpenses = expenses
+    .filter(e => e.date?.startsWith(yearKey))
+    .slice()
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const byMonth: Record<number, Expense[]> = {};
+  for (const e of yearExpenses) {
+    const m = parseInt(e.date.slice(5, 7), 10);
+    (byMonth[m] ??= []).push(e);
+  }
+  const fmtDate = (d: string) => {
+    const [y, mo, da] = d.split('-').map(Number);
+    return new Date(y, mo - 1, da).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+  const expenseListRows = Object.keys(byMonth)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map(m => {
+      const list = byMonth[m];
+      const subtotal = list.reduce((s, e) => s + Number(e.amount), 0);
+      const rows = list.map(e => `<tr>
+        <td>${fmtDate(e.date)}</td>
+        <td>${escapeHtml(catEmoji[e.category] ?? '')} ${escapeHtml(e.category)}</td>
+        <td>${escapeHtml(e.note ?? '')}</td>
+        <td>${escapeHtml(e.added_by_name ?? '')}</td>
+        <td class="num">${money(Number(e.amount))}</td>
+      </tr>`).join('');
+      return `<tr class="month-head"><td colspan="5">${MONTH_LABELS[m - 1]} ${escapeHtml(yearKey)}</td></tr>
+      ${rows}
+      <tr class="month-total"><td colspan="4">${MONTH_LABELS[m - 1]} total · ${list.length} expense${list.length === 1 ? '' : 's'}</td><td class="num">${money(subtotal)}</td></tr>`;
+    })
+    .join('');
+
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -754,6 +835,12 @@ export function buildBudgetReportHtml(params: {
   td.num, th.num { text-align: right; }
   .over { color: #DC2626; font-weight: 700; }
   .under { color: #059669; font-weight: 700; }
+  tr { page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  .page-break { page-break-before: always; }
+  tr.month-head { page-break-after: avoid; break-after: avoid; }
+  tr.month-head td { background: #F1F5F9; font-weight: 700; font-size: 12px; padding-top: 9px; }
+  tr.month-total td { font-weight: 700; color: #475569; border-bottom: 2px solid #CBD5E1; }
   .footer { margin-top: 26px; font-size: 10.5px; color: #94A3B8; }
   @media print { body { padding: 12px; } }
 </style>
@@ -778,6 +865,14 @@ export function buildBudgetReportHtml(params: {
   <table>
     <tr><th>Month</th><th class="num">Income</th><th class="num">Expenses</th><th class="num">Net</th></tr>
     ${monthRows}
+  </table>
+
+  <h2 class="page-break">Expense List — ${yearExpenses.length} expense${yearExpenses.length === 1 ? '' : 's'} · ${money(yearExpenses.reduce((s, e) => s + Number(e.amount), 0))}</h2>
+  <table>
+    <thead><tr><th>Date</th><th>Category</th><th>Note</th><th>Added by</th><th class="num">Amount</th></tr></thead>
+    <tbody>
+    ${expenseListRows || '<tr><td colspan="5" style="color:#94A3B8">No expenses logged this year.</td></tr>'}
+    </tbody>
   </table>
 
   <div class="footer">Adeboye Monthly Budget · generated ${escapeHtml(generatedAt)}</div>

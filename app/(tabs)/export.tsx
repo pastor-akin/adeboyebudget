@@ -1,11 +1,17 @@
 import { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as Print from 'expo-print';
 import { Ionicons } from '@expo/vector-icons';
-import { getAllExpenses, getExpenses, toMonthKey, formatMonthLabel } from '../../services/supabase';
-import { Colors } from '../../constants/theme';
+import {
+  getAllExpenses, getExpenses, toMonthKey, toYearKey, formatMonthLabel,
+  getCategories, getYearlyBudgets, getExpensesForYear, getIncomeForYear, buildBudgetReportHtml,
+} from '../../services/supabase';
+import { useRouter } from 'expo-router';
+import { Colors, Radius, Shadow } from '../../constants/theme';
+import { ScreenHeader, IconButton } from '../../components/ui';
 
 function toCsv(expenses: { date: string; category: string; amount: number; note?: string; added_by_name?: string }[]): string {
   const header = 'Date,Category,Amount,Note,AddedBy';
@@ -16,7 +22,49 @@ function toCsv(expenses: { date: string; category: string; amount: number; note?
 }
 
 export default function ExportScreen() {
+  const router = useRouter();
+  // Inline status message — RN's Alert.alert does nothing in a web browser.
+  const [notice, setNotice] = useState<{ title: string; message: string } | null>(null);
+  const Alert = { alert: (title: string, message?: string) => setNotice({ title, message: message ?? '' }) };
   const [loading, setLoading] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const yearKey = toYearKey();
+
+  async function exportPdf() {
+    setPdfLoading(true);
+    try {
+      const [categories, budgets, expenses, income] = await Promise.all([
+        getCategories(), getYearlyBudgets(yearKey), getExpensesForYear(yearKey), getIncomeForYear(yearKey),
+      ]);
+      if (expenses.length === 0 && income.length === 0) {
+        Alert.alert('No data', `There's nothing logged for ${yearKey} yet.`);
+        return;
+      }
+      const plannedByCategory: Record<string, number> = {};
+      for (const b of budgets) plannedByCategory[b.category] = Number(b.amount);
+      const spentByCategory: Record<string, number> = {};
+      for (const e of expenses) spentByCategory[e.category] = (spentByCategory[e.category] ?? 0) + Number(e.amount);
+      const html = buildBudgetReportHtml({
+        yearKey, categories, plannedByCategory, spentByCategory, income, expenses,
+        generatedAt: new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }),
+      });
+      if (Platform.OS === 'web') {
+        // On web this opens the browser print dialog ("Save as PDF").
+        await Print.printToFileAsync({ html });
+        return;
+      }
+      const { uri } = await Print.printToFileAsync({ html });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `${yearKey} Budget Report`, UTI: 'com.adobe.pdf' });
+      } else {
+        Alert.alert('Saved', `PDF saved to: ${uri}`);
+      }
+    } catch (e: any) {
+      Alert.alert('Export failed', e.message ?? 'Could not generate the PDF.');
+    } finally {
+      setPdfLoading(false);
+    }
+  }
 
   async function exportCsv(scope: 'month' | 'all') {
     setLoading(true);
@@ -25,6 +73,20 @@ export default function ExportScreen() {
       if (data.length === 0) { Alert.alert('No data', 'There are no expenses to export.'); return; }
       const csv = toCsv(data);
       const filename = scope === 'month' ? `expenses-${toMonthKey()}.csv` : `expenses-all.csv`;
+      if (Platform.OS === 'web') {
+        // Browsers have no app file system — hand the CSV straight to the
+        // browser as a download instead.
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        return;
+      }
       const path = `${FileSystem.documentDirectory}${filename}`;
       await FileSystem.writeAsStringAsync(path, csv, { encoding: FileSystem.EncodingType.UTF8 });
       const canShare = await Sharing.isAvailableAsync();
@@ -40,30 +102,45 @@ export default function ExportScreen() {
     }
   }
 
+  const Option = ({ icon, title, sub, onPress, busy, tint }: { icon: keyof typeof Ionicons.glyphMap; title: string; sub: string; onPress: () => void; busy?: boolean; tint: string }) => (
+    <TouchableOpacity style={styles.option} onPress={onPress} disabled={loading || pdfLoading} activeOpacity={0.8}>
+      <View style={[styles.optionIcon, { backgroundColor: tint + '1A' }]}>
+        {busy ? <ActivityIndicator color={tint} /> : <Ionicons name={icon} size={24} color={tint} />}
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.optionTitle}>{title}</Text>
+        <Text style={styles.optionSub}>{sub}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+    </TouchableOpacity>
+  );
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Export</Text>
-      </View>
+      <ScreenHeader
+        title="Reports"
+        subtitle="Download or share your numbers"
+        right={<IconButton icon="close" label="Close" onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))} />}
+      />
       <View style={styles.content}>
-        <View style={styles.iconWrap}>
-          <Ionicons name="document-text-outline" size={64} color={Colors.primary} />
-        </View>
-        <Text style={styles.desc}>
-          Export your expenses as a CSV file you can open in Excel, Google Sheets, or Numbers.
-        </Text>
-        <TouchableOpacity style={styles.btn} onPress={() => exportCsv('month')} disabled={loading}>
-          {loading ? <ActivityIndicator color="#fff" /> : (
-            <>
-              <Ionicons name="calendar-outline" size={20} color="#fff" style={styles.btnIcon} />
-              <Text style={styles.btnText}>Export This Month ({formatMonthLabel(toMonthKey())})</Text>
-            </>
-          )}
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={() => exportCsv('all')} disabled={loading}>
-          <Ionicons name="time-outline" size={20} color={Colors.primary} style={styles.btnIcon} />
-          <Text style={[styles.btnText, { color: Colors.primary }]}>Export All Time</Text>
-        </TouchableOpacity>
+        <Text style={styles.section}>PDF</Text>
+        <Option icon="document-text" tint={Colors.primary} busy={pdfLoading} onPress={exportPdf}
+          title={`${yearKey} budget report`} sub="Yearly summary plus every expense, grouped by month" />
+
+        <Text style={styles.section}>Spreadsheet (CSV)</Text>
+        <Option icon="calendar" tint={Colors.partnerA} busy={loading} onPress={() => exportCsv('month')}
+          title={`${formatMonthLabel(toMonthKey())} expenses`} sub="Opens in Excel, Google Sheets, or Numbers" />
+        <Option icon="time" tint={Colors.warning} onPress={() => exportCsv('all')}
+          title="All expenses, all time" sub="Every expense you've logged" />
+        {notice ? (
+          <View style={styles.notice}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.noticeTitle}>{notice.title}</Text>
+              {notice.message ? <Text style={styles.noticeMsg}>{notice.message}</Text> : null}
+            </View>
+            <TouchableOpacity onPress={() => setNotice(null)} hitSlop={8}><Ionicons name="close" size={18} color={Colors.textSecondary} /></TouchableOpacity>
+          </View>
+        ) : null}
       </View>
     </SafeAreaView>
   );
@@ -71,13 +148,13 @@ export default function ExportScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  header: { paddingHorizontal: 16, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  title: { fontSize: 22, fontWeight: '700', color: Colors.text },
-  content: { flex: 1, padding: 24, alignItems: 'center', justifyContent: 'center' },
-  iconWrap: { width: 100, height: 100, borderRadius: 24, backgroundColor: Colors.surface, justifyContent: 'center', alignItems: 'center', marginBottom: 24 },
-  desc: { fontSize: 15, color: Colors.textSecondary, textAlign: 'center', lineHeight: 22, marginBottom: 40, paddingHorizontal: 16 },
-  btn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: Colors.primary, borderRadius: 14, paddingVertical: 16, paddingHorizontal: 24, marginBottom: 12, width: '100%' },
-  btnSecondary: { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: Colors.primary },
-  btnIcon: { marginRight: 10 },
-  btnText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+  content: { paddingHorizontal: 16, paddingTop: 8, gap: 10, maxWidth: 640, width: '100%', alignSelf: 'center' },
+  section: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.6, marginTop: 12, marginLeft: 4 },
+  option: { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: 16, ...Shadow.card },
+  optionIcon: { width: 48, height: 48, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  optionTitle: { fontSize: 16, fontWeight: '700', color: Colors.text },
+  notice: { flexDirection: 'row', gap: 10, backgroundColor: Colors.primaryLight, borderRadius: Radius.md, padding: 14, marginTop: 8 },
+  noticeTitle: { fontSize: 14, fontWeight: '700', color: Colors.primaryDark },
+  noticeMsg: { fontSize: 13, color: Colors.primaryDark, marginTop: 2 },
+  optionSub: { fontSize: 13, color: Colors.textSecondary, marginTop: 2 },
 });

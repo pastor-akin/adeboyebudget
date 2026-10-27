@@ -1,19 +1,21 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView,
-  TouchableOpacity, Dimensions, ActivityIndicator, Alert,
+  Dimensions, ActivityIndicator, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { PieChart, BarChart } from 'react-native-chart-kit';
 import {
   Expense, AppCategory, getCategories, getExpenses, toMonthKey, formatMonthLabel,
 } from '../../services/supabase';
-import { Colors, CategoryColors } from '../../constants/theme';
+import { Colors, CategoryColors, Radius, Shadow } from '../../constants/theme';
+import { ScreenHeader, MonthSwitcher, IconButton, money } from '../../components/ui';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 
 export default function ChartsScreen() {
+  const router = useRouter();
   const [monthKey, setMonthKey] = useState(toMonthKey());
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [categories, setCategories] = useState<AppCategory[]>([]);
@@ -25,7 +27,7 @@ export default function ChartsScreen() {
       setExpenses(data);
       setCategories(cats);
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      // leave the previous data on screen
     } finally {
       setLoading(false);
     }
@@ -44,7 +46,8 @@ export default function ChartsScreen() {
       amount: expenses.filter(e => e.category === cat.name).reduce((s, e) => s + e.amount, 0),
       color: cat.color ?? CategoryColors[cat.name] ?? '#64748B',
       legendFontColor: Colors.textSecondary,
-      legendFontSize: 13,
+      legendFontSize: 12,
+      legendFontFamily: Platform.OS === 'web' ? 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' : undefined,
     }))
     .filter(d => d.amount > 0);
 
@@ -63,72 +66,85 @@ export default function ChartsScreen() {
   const chartConfig = {
     backgroundGradientFrom: Colors.surface,
     backgroundGradientTo: Colors.surface,
-    color: (opacity = 1) => `rgba(16, 185, 129, ${opacity})`,
+    fillShadowGradientFrom: Colors.primary,
+    fillShadowGradientTo: Colors.primary,
+    fillShadowGradientOpacity: 0.9,
+    fillShadowGradientToOpacity: 0.9,
+    color: (opacity = 1) => `rgba(14, 140, 125, ${opacity})`,
     labelColor: () => Colors.textSecondary,
     strokeWidth: 2,
-    barPercentage: 0.7,
+    barPercentage: 0.5,
+    // chart-kit's SVG text defaults to a serif font in browsers
+    propsForLabels: Platform.OS === 'web' ? { fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif' } : {},
     decimalPlaces: 0,
   };
 
   const total = expenses.reduce((s, e) => s + e.amount, 0);
 
+  const cardWidth = Math.min(SCREEN_WIDTH, 720) - 32;
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => changeMonth(-1)} style={styles.navBtn}>
-          <Ionicons name="chevron-back" size={22} color={Colors.text} />
-        </TouchableOpacity>
-        <Text style={styles.monthLabel}>{formatMonthLabel(monthKey)}</Text>
-        <TouchableOpacity onPress={() => changeMonth(1)} style={styles.navBtn}>
-          <Ionicons name="chevron-forward" size={22} color={Colors.text} />
-        </TouchableOpacity>
-      </View>
+      <ScreenHeader
+        title="Insights"
+        subtitle="Where the money went"
+        right={<IconButton icon="document-text-outline" label="Reports" onPress={() => router.push('/export')} />}
+      />
+      <MonthSwitcher label={formatMonthLabel(monthKey)} onPrev={() => changeMonth(-1)} onNext={() => changeMonth(1)} style={{ marginBottom: 14 }} />
 
       {loading ? (
         <ActivityIndicator color={Colors.primary} style={{ marginTop: 40 }} />
       ) : expenses.length === 0 ? (
         <View style={styles.empty}>
           <Text style={styles.emptyEmoji}>📊</Text>
-          <Text style={styles.emptyText}>No data for this month</Text>
+          <Text style={styles.emptyText}>No spending to chart this month</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ paddingBottom: 40 }}>
-          <Text style={styles.totalText}>Total: ${total.toFixed(2)}</Text>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40, gap: 16 }}>
+          <View style={styles.card}>
+            <Text style={styles.cardLabel}>Total spent</Text>
+            <Text style={styles.total}>{money(total)}</Text>
+            <PieChart
+              data={pieData}
+              width={cardWidth - 8}
+              height={190}
+              chartConfig={chartConfig}
+              accessor="amount"
+              backgroundColor="transparent"
+              paddingLeft="0"
+              absolute={false}
+            />
+          </View>
 
-          <Text style={styles.sectionTitle}>By Category</Text>
-          <PieChart
-            data={pieData}
-            width={SCREEN_WIDTH}
-            height={200}
-            chartConfig={chartConfig}
-            accessor="amount"
-            backgroundColor="transparent"
-            paddingLeft="16"
-            absolute={false}
-          />
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Daily spending</Text>
+            <BarChart
+              data={{ labels: barLabels, datasets: [{ data: dailyTotals }] }}
+              width={cardWidth - 16}
+              height={190}
+              chartConfig={chartConfig}
+              style={{ marginLeft: -8 }}
+              showValuesOnTopOfBars={false}
+              withInnerLines={false}
+              yAxisLabel="$"
+              yAxisSuffix=""
+              fromZero
+            />
+          </View>
 
-          <Text style={styles.sectionTitle}>Daily Spending</Text>
-          <BarChart
-            data={{ labels: barLabels, datasets: [{ data: dailyTotals }] }}
-            width={SCREEN_WIDTH - 16}
-            height={200}
-            chartConfig={chartConfig}
-            style={{ marginLeft: 8, borderRadius: 12 }}
-            showValuesOnTopOfBars={false}
-            withInnerLines={false}
-            yAxisLabel="$"
-            yAxisSuffix=""
-            fromZero
-          />
-
-          <Text style={styles.sectionTitle}>Breakdown</Text>
-          <View style={styles.breakdown}>
-            {pieData.sort((a, b) => b.amount - a.amount).map(d => (
-              <View key={d.name} style={styles.breakdownRow}>
+          <View style={[styles.card, { paddingHorizontal: 0, paddingBottom: 4 }]}>
+            <Text style={[styles.cardTitle, { paddingHorizontal: 18 }]}>By category</Text>
+            {pieData.sort((a, b) => b.amount - a.amount).map((d, idx) => (
+              <View key={d.name} style={[styles.breakdownRow, idx > 0 && styles.breakdownDivider]}>
                 <View style={[styles.dot, { backgroundColor: d.color }]} />
-                <Text style={styles.breakdownCat}>{d.name}</Text>
-                <Text style={styles.breakdownPct}>{((d.amount / total) * 100).toFixed(0)}%</Text>
-                <Text style={styles.breakdownAmt}>${d.amount.toFixed(2)}</Text>
+                <View style={{ flex: 1, gap: 6 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={styles.breakdownCat}>{d.name}</Text>
+                    <Text style={styles.breakdownPct}>{((d.amount / total) * 100).toFixed(0)}%</Text>
+                    <Text style={styles.breakdownAmt}>{money(d.amount)}</Text>
+                  </View>
+                  <View style={styles.track}><View style={[styles.fill, { width: `${(d.amount / total) * 100}%` as any, backgroundColor: d.color }]} /></View>
+                </View>
               </View>
             ))}
           </View>
@@ -140,18 +156,19 @@ export default function ChartsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  navBtn: { padding: 8 },
-  monthLabel: { fontSize: 17, fontWeight: '700', color: Colors.text },
-  totalText: { fontSize: 15, color: Colors.textSecondary, textAlign: 'center', marginTop: 16, marginBottom: 4 },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: Colors.text, paddingHorizontal: 16, marginTop: 24, marginBottom: 12 },
-  breakdown: { marginHorizontal: 16, backgroundColor: Colors.surface, borderRadius: 16, overflow: 'hidden' },
-  breakdownRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Colors.border },
-  dot: { width: 10, height: 10, borderRadius: 5, marginRight: 10 },
-  breakdownCat: { flex: 1, fontSize: 15, color: Colors.text, fontWeight: '500' },
-  breakdownPct: { fontSize: 14, color: Colors.textSecondary, marginRight: 12 },
+  card: { backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: 18, ...Shadow.card, overflow: 'hidden' },
+  cardLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  total: { fontSize: 30, fontWeight: '800', color: Colors.text, letterSpacing: -0.6, marginTop: 2, marginBottom: 4 },
+  cardTitle: { fontSize: 16, fontWeight: '800', color: Colors.text, marginBottom: 12 },
+  breakdownRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 12 },
+  breakdownDivider: { borderTopWidth: 1, borderTopColor: Colors.border },
+  dot: { width: 12, height: 12, borderRadius: 6, marginRight: 12 },
+  breakdownCat: { flex: 1, fontSize: 15, color: Colors.text, fontWeight: '600' },
+  breakdownPct: { fontSize: 13, color: Colors.textMuted, marginRight: 12, fontWeight: '600' },
   breakdownAmt: { fontSize: 15, fontWeight: '700', color: Colors.text },
+  track: { height: 5, borderRadius: 3, backgroundColor: Colors.surfaceHigh, overflow: 'hidden' },
+  fill: { height: 5, borderRadius: 3 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyEmoji: { fontSize: 48, marginBottom: 12 },
-  emptyText: { fontSize: 16, color: Colors.textSecondary },
+  emptyText: { fontSize: 16, color: Colors.textSecondary, fontWeight: '600' },
 });
