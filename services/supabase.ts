@@ -1,7 +1,7 @@
 import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { DEFAULT_CATEGORIES, CategoryEmoji, CategoryColors } from '../constants/theme';
+import { DEFAULT_CATEGORIES, CategoryEmoji, CategoryColors, DEFAULT_SECTIONS, BudgetSection } from '../constants/theme';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
@@ -24,6 +24,8 @@ export interface AppCategory {
   emoji: string;
   color: string;
   is_default: boolean;
+  /** Fixed / variable / flexible. Null or missing = use the built-in default (see sectionFor). */
+  section?: BudgetSection | null;
 }
 
 export interface Expense {
@@ -89,6 +91,7 @@ export async function getCategories(): Promise<AppCategory[]> {
       emoji: CategoryEmoji[name] ?? '📦',
       color: CategoryColors[name] ?? '#64748B',
       is_default: true,
+      section: DEFAULT_SECTIONS[name] ?? null,
     }));
   }
   return data;
@@ -102,6 +105,20 @@ export async function addCategory(name: string, emoji: string, color: string): P
     is_default: false,
   });
   if (error) throw error;
+}
+
+/** Moves a category into the Fixed / Variable / Flexible section. */
+export async function setCategorySection(name: string, section: BudgetSection): Promise<void> {
+  const { error } = await supabase
+    .from('budget_categories')
+    .update({ section })
+    .eq('name', name);
+  if (error) {
+    if (/section/i.test(error.message)) {
+      throw new Error('Sections need a quick database update first — run supabase_sections.sql in the Supabase SQL Editor.');
+    }
+    throw error;
+  }
 }
 
 export async function deleteCategory(name: string): Promise<void> {

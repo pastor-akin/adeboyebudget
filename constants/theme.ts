@@ -71,6 +71,43 @@ export const DEFAULT_CATEGORIES = [
   'Taxes',
 ];
 
+// Budget sections — how controllable the spending is.
+export type BudgetSection = 'fixed' | 'variable' | 'flexible';
+
+export const SECTIONS: { key: BudgetSection; title: string; blurb: string; icon: 'lock-outline' | 'trending-up' | 'shopping-bag'; color: string }[] = [
+  { key: 'fixed', title: 'Fixed bills', blurb: 'About the same every month', icon: 'lock-outline', color: '#5B7CFA' },
+  { key: 'variable', title: 'Variable bills', blurb: 'Change with the season or usage', icon: 'trending-up', color: '#F2A93B' },
+  { key: 'flexible', title: 'Flexible spending', blurb: 'Where you can cut back', icon: 'shopping-bag', color: '#0E8C7D' },
+];
+
+// Where the built-in categories go until someone changes them.
+export const DEFAULT_SECTIONS: Record<string, BudgetSection> = {
+  'Internet': 'fixed',
+  'Car Insurance': 'fixed',
+  'House Insurance': 'fixed',
+  'Taxes': 'fixed',
+  'Electric': 'variable',
+  'Water': 'variable',
+  'Sewer': 'variable',
+  'Heating Oil': 'variable',
+  'Propane': 'variable',
+  'Car Repairs': 'variable',
+  'Home Repairs': 'variable',
+  'Gas': 'flexible',
+  'Food': 'flexible',
+  'Snacks': 'flexible',
+  'Coffee': 'flexible',
+  'Eating Out': 'flexible',
+  'Home Supplies': 'flexible',
+};
+
+/** A category's section: its saved choice, else the built-in default, else null (not sorted yet). */
+export function sectionFor(cat: { name: string; section?: string | null }): BudgetSection | null {
+  const s = cat.section;
+  if (s === 'fixed' || s === 'variable' || s === 'flexible') return s;
+  return DEFAULT_SECTIONS[cat.name] ?? null;
+}
+
 export const CategoryEmoji: Record<string, string> = {
   'Gas':            '⛽',
   'Electric':       '⚡',

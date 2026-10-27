@@ -20,14 +20,14 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import {
   supabase, AppCategory, BudgetLimit, Expense, Income,
-  getCategories, addCategory, renameCategory, deleteCategory, mergeCategory, demoteCategory,
+  getCategories, addCategory, renameCategory, deleteCategory, mergeCategory, demoteCategory, setCategorySection,
   getYearlyBudgets, upsertBudget, deleteBudget,
   distributeYearlyBudget, clearYearlyDistribution,
   getExpensesForYear, addExpense, deleteExpense, updateExpense, uploadReceipt,
   getIncomeForYear, addIncome, deleteIncome, getIncomeNames, sumIncome,
   buildMonthlyBreakdown, buildMonthlyComparison, buildBudgetCsv, buildBudgetReportHtml,
 } from '../../services/supabase';
-import { CategoryColors } from '../../constants/theme';
+import { CategoryColors, SECTIONS, BudgetSection, sectionFor } from '../../constants/theme';
 import {
   PalaceColors as Colors, PalaceSpacing as Spacing, PalaceRadius as Radius,
   PalaceShadow as Shadow, PalaceTypography as Typography,
@@ -41,6 +41,11 @@ type Mode = 'categories' | 'expenses' | 'income' | 'overview';
 
 function fmt(n: number): string {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** Whole dollars, e.g. "$1,032" — used where space is tight. */
+function whole(n: number): string {
+  return `$${Math.round(n).toLocaleString('en-US')}`;
 }
 
 function todayStr(): string {
@@ -79,6 +84,9 @@ export default function BudgetsScreen() {
   const [showCatForm, setShowCatForm] = useState(false);
   const [catName, setCatName] = useState('');
   const [catPlanned, setCatPlanned] = useState('');
+  const [catSection, setCatSection] = useState<BudgetSection>('flexible');
+  // Fixed / Variable / Flexible groups the user has collapsed.
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const [editingCatOriginalName, setEditingCatOriginalName] = useState<string | null>(null);
 
   // expenses drill-down
@@ -230,9 +238,10 @@ export default function BudgetsScreen() {
   };
 
   // ── Category actions ───────────────────────────────────────────────────
-  const openNewCategory = () => { setEditingCatOriginalName(null); setCatName(''); setCatPlanned(''); setShowCatForm(true); };
+  const openNewCategory = (section: BudgetSection = 'flexible') => { setEditingCatOriginalName(null); setCatName(''); setCatPlanned(''); setCatSection(section); setShowCatForm(true); };
   const openEditCategory = (c: AppCategory) => {
     setEditingCatOriginalName(c.name);
+    setCatSection(sectionFor(c) ?? 'flexible');
     setCatName(c.name);
     setCatPlanned(plannedByCategory[c.name] ? String(plannedByCategory[c.name]) : '');
     setShowCatForm(true);
@@ -265,6 +274,15 @@ export default function BudgetsScreen() {
       } else {
         await addCategory(finalName, '📦', '#8B5CF6');
       }
+      // Save the section separately so a missing database column (sections
+      // SQL not run yet) doesn't block saving the name and budget.
+      let sectionError: string | null = null;
+      const prev = editingCatOriginalName ? categories.find(c => c.name === editingCatOriginalName) : undefined;
+      const prevSection = prev ? (prev.section ?? null) : null;
+      if (prevSection !== catSection) {
+        try { await setCategorySection(finalName, catSection); }
+        catch (e: any) { sectionError = e.message ?? 'Could not save the section.'; }
+      }
       if (planned > 0) {
         await upsertBudget(yearKey, finalName, planned, 'yearly');
         await distributeYearlyBudget(yearKey, finalName, planned);
@@ -274,6 +292,7 @@ export default function BudgetsScreen() {
       }
       setShowCatForm(false);
       load();
+      if (sectionError) Alert('Saved, but not the section', sectionError);
     } catch (e: any) {
       Alert('Error', e.message ?? (editingCatOriginalName ? 'Could not update this category.' : 'Could not create this category — it may already exist.'));
     } finally {
@@ -855,11 +874,34 @@ export default function BudgetsScreen() {
   for (const e of thisMonthExpenses) thisMonthByCat[e.category] = (thisMonthByCat[e.category] ?? 0) + Number(e.amount);
   const topThisMonth = Object.entries(thisMonthByCat).sort((a, b) => b[1] - a[1]).slice(0, 3);
 
+  // Fixed / Variable / Flexible groups. Within each, the categories needing
+  // attention come first: over budget, then nearly there, then the rest by
+  // how much of the budget is used; unused categories (no budget, nothing
+  // spent) sink to the bottom.
+  const attentionRank = (c: AppCategory) => {
+    const planned = plannedByCategory[c.name] ?? 0, spent = spentByCategory[c.name] ?? 0;
+    if (planned > 0 && spent > planned) return 0;
+    if (planned > 0 && spent / planned > 0.85) return 1;
+    if (planned > 0 || spent > 0) return 2;
+    return 3;
+  };
+  const usage = (c: AppCategory) => {
+    const planned = plannedByCategory[c.name] ?? 0, spent = spentByCategory[c.name] ?? 0;
+    return planned > 0 ? spent / planned : spent > 0 ? 1 : 0;
+  };
+  const byAttention = (a: AppCategory, b: AppCategory) =>
+    attentionRank(a) - attentionRank(b) || usage(b) - usage(a)
+    || (spentByCategory[b.name] ?? 0) - (spentByCategory[a.name] ?? 0) || a.name.localeCompare(b.name);
+  const groups: { key: string; title: string; blurb: string; icon: 'lock-outline' | 'trending-up' | 'shopping-bag' | 'help-outline'; color: string; cats: AppCategory[] }[] = [
+    ...SECTIONS.map(sec => ({ ...sec, cats: categories.filter(c => sectionFor(c) === sec.key).sort(byAttention) })),
+    { key: 'unsorted', title: 'Not sorted yet', blurb: 'Tap a category → Edit to choose its group', icon: 'help-outline' as const, color: Colors.textMuted, cats: categories.filter(c => !sectionFor(c)).sort(byAttention) },
+  ].filter(g => g.cats.length > 0);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Budgets</Text>
-        <Pressable style={styles.newBtn} onPress={openNewCategory}><MaterialIcons name="add" size={18} color="#fff" /><Text style={styles.newBtnText}>Category</Text></Pressable>
+        <Pressable style={styles.newBtn} onPress={() => openNewCategory()}><MaterialIcons name="add" size={18} color="#fff" /><Text style={styles.newBtnText}>Category</Text></Pressable>
       </View>
       {ModeSwitcher}
       {YearRow(true)}
@@ -919,67 +961,100 @@ export default function BudgetsScreen() {
               <View style={styles.emptyRing}><MaterialIcons name="account-balance-wallet" size={32} color={Colors.primary} /></View>
               <Text style={styles.emptyTitle}>No budget categories for {yearKey} yet</Text>
               <Text style={styles.emptyText}>Add categories and set how much you plan to spend on each this year.</Text>
-              <Pressable style={styles.emptyCta} onPress={openNewCategory}><MaterialIcons name="add" size={18} color="#fff" /><Text style={styles.newBtnText}>Add a Category</Text></Pressable>
+              <Pressable style={styles.emptyCta} onPress={() => openNewCategory()}><MaterialIcons name="add" size={18} color="#fff" /><Text style={styles.newBtnText}>Add a Category</Text></Pressable>
             </View>
-          ) : categories.map(c => {
-            const planned = plannedByCategory[c.name] ?? 0;
-            const spent = spentByCategory[c.name] ?? 0;
-            const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
-            const over = planned > 0 && spent > planned;
-            const isExpanded = expandedCategory === c.name;
+          ) : groups.map(g => {
+            const collapsed = !!collapsedSections[g.key];
+            const gPlanned = g.cats.reduce((t, c) => t + (plannedByCategory[c.name] ?? 0), 0);
+            const gSpent = g.cats.reduce((t, c) => t + (spentByCategory[c.name] ?? 0), 0);
+            const gPct = gPlanned > 0 ? Math.min(100, (gSpent / gPlanned) * 100) : 0;
+            const gOver = g.cats.filter(c => (plannedByCategory[c.name] ?? 0) > 0 && (spentByCategory[c.name] ?? 0) > (plannedByCategory[c.name] ?? 0)).length;
             return (
-              <View key={c.name} style={styles.catCard}>
-                <Pressable style={styles.catHeaderRow} onPress={() => toggleExpand(c.name)}>
-                  <View style={[styles.catIcon, { backgroundColor: (c.color ?? CategoryColors[c.name] ?? '#64748B') + '22' }]}>
-                    <Text style={{ fontSize: 19 }}>{c.emoji}</Text>
+              <View key={g.key} style={{ gap: Spacing.sm }}>
+                <Pressable style={styles.sectionHeader} onPress={() => { LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut); setCollapsedSections(p => ({ ...p, [g.key]: !p[g.key] })); }}>
+                  <View style={[styles.sectionIcon, { backgroundColor: g.color + '1F' }]}>
+                    <MaterialIcons name={g.icon} size={20} color={g.color} />
                   </View>
-                  <View style={{ flex: 1, gap: 6 }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                      <Text style={styles.catTitle} numberOfLines={1}>{c.name}</Text>
-                      <Text style={[styles.catHeaderAmt, over && { color: Colors.error }]}>
-                        ${fmt(spent)}{planned > 0 ? <Text style={styles.catHeaderOf}> / ${fmt(planned)}</Text> : null}
-                      </Text>
+                  <View style={{ flex: 1, gap: 5 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={styles.sectionTitle} numberOfLines={1}>{g.title}</Text>
+                      {gOver > 0 ? <View style={styles.overBadge}><Text style={styles.overBadgeText}>{gOver} over</Text></View> : null}
                     </View>
-                    {planned > 0 ? (
-                      <View style={styles.progressBarBg}>
-                        <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: over ? Colors.error : pct > 85 ? Colors.warning : (c.color ?? Colors.primary) }]} />
-                      </View>
-                    ) : <Text style={styles.catNoBudget}>No budget set</Text>}
-                  </View>
-                  <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={22} color={Colors.textMuted} />
-                </Pressable>
-
-                {isExpanded ? (
-                  <View style={styles.catExpanded}>
-                    <Text style={styles.catMeta}>
-                      {planned > 0 ? `$${fmt(spent)} of $${fmt(planned)} spent${over ? ' — over budget' : ''}` : `$${fmt(spent)} spent this year · No budget set`}
+                    <Text style={styles.sectionAmt}>
+                      {whole(gSpent)}{gPlanned > 0 ? <Text style={styles.catHeaderOf}> of {whole(gPlanned)} spent</Text> : <Text style={styles.catHeaderOf}> spent</Text>}
                     </Text>
-                    <View style={styles.catExpandedActions}>
-                      <Pressable style={styles.expandedActionBtn} onPress={() => openExpenses(c)}>
-                        <MaterialIcons name="receipt-long" size={15} color={Colors.primary} />
-                        <Text style={styles.expandedActionText}>Expenses</Text>
-                      </Pressable>
-                      <Pressable style={styles.expandedActionBtn} onPress={() => openEditCategory(c)}>
-                        <MaterialIcons name="edit" size={15} color={Colors.primary} />
-                        <Text style={styles.expandedActionText}>Edit</Text>
-                      </Pressable>
-                      <Pressable style={styles.expandedActionBtn} onPress={() => openMergePicker(c)}>
-                        <MaterialIcons name="call-merge" size={15} color={Colors.primary} />
-                        <Text style={styles.expandedActionText}>Merge</Text>
-                      </Pressable>
-                      {c.is_default ? (
-                        <Pressable style={styles.expandedActionBtn} onPress={() => removeDefaultStatus(c)}>
-                          <MaterialIcons name="remove-circle-outline" size={15} color={Colors.primary} />
-                          <Text style={styles.expandedActionText}>Remove as Default</Text>
-                        </Pressable>
-                      ) : null}
-                      <Pressable style={[styles.expandedActionBtn, { borderColor: '#EF444440' }]} onPress={() => removeCategory(c)}>
-                        <MaterialIcons name="delete-outline" size={15} color="#EF4444" />
-                        <Text style={[styles.expandedActionText, { color: '#EF4444' }]}>Delete</Text>
-                      </Pressable>
-                    </View>
+                    <Text style={styles.sectionBlurb} numberOfLines={1}>{g.blurb} · {g.cats.length} {g.cats.length === 1 ? 'category' : 'categories'}</Text>
+                    {gPlanned > 0 ? (
+                      <View style={styles.progressBarBg}>
+                        <View style={[styles.progressBarFill, { width: `${gPct}%` as any, backgroundColor: gSpent > gPlanned ? Colors.error : g.color }]} />
+                      </View>
+                    ) : null}
                   </View>
-                ) : null}
+                  <MaterialIcons name={collapsed ? 'expand-more' : 'expand-less'} size={24} color={Colors.textMuted} />
+                </Pressable>
+                {collapsed ? null : g.cats.map(c => {
+                  const planned = plannedByCategory[c.name] ?? 0;
+                  const spent = spentByCategory[c.name] ?? 0;
+                  const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
+                  const over = planned > 0 && spent > planned;
+                  const isExpanded = expandedCategory === c.name;
+                  const dim = planned === 0 && spent === 0;
+                  return (
+                <View key={c.name} style={[styles.catCard, dim && styles.catCardDim]}>
+                  <Pressable style={styles.catHeaderRow} onPress={() => toggleExpand(c.name)}>
+                    <View style={[styles.catIcon, { backgroundColor: (c.color ?? CategoryColors[c.name] ?? '#64748B') + '22' }]}>
+                      <Text style={{ fontSize: 19 }}>{c.emoji}</Text>
+                    </View>
+                    <View style={{ flex: 1, gap: 6 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <Text style={styles.catTitle} numberOfLines={1}>{c.name}</Text>
+                        <Text style={[styles.catHeaderAmt, over && { color: Colors.error }]}>
+                          {whole(spent)}{planned > 0 ? <Text style={styles.catHeaderOf}> / {whole(planned)}</Text> : null}
+                        </Text>
+                      </View>
+                      {planned > 0 ? (
+                        <View style={styles.progressBarBg}>
+                          <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: over ? Colors.error : pct > 85 ? Colors.warning : (c.color ?? Colors.primary) }]} />
+                        </View>
+                      ) : <Text style={styles.catNoBudget}>No budget set</Text>}
+                    </View>
+                    <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={22} color={Colors.textMuted} />
+                  </Pressable>
+
+                  {isExpanded ? (
+                    <View style={styles.catExpanded}>
+                      <Text style={styles.catMeta}>
+                        {planned > 0 ? `$${fmt(spent)} of $${fmt(planned)} spent${over ? ' — over budget' : ''}` : `$${fmt(spent)} spent this year · No budget set`}
+                      </Text>
+                      <View style={styles.catExpandedActions}>
+                        <Pressable style={styles.expandedActionBtn} onPress={() => openExpenses(c)}>
+                          <MaterialIcons name="receipt-long" size={15} color={Colors.primary} />
+                          <Text style={styles.expandedActionText}>Expenses</Text>
+                        </Pressable>
+                        <Pressable style={styles.expandedActionBtn} onPress={() => openEditCategory(c)}>
+                          <MaterialIcons name="edit" size={15} color={Colors.primary} />
+                          <Text style={styles.expandedActionText}>Edit</Text>
+                        </Pressable>
+                        <Pressable style={styles.expandedActionBtn} onPress={() => openMergePicker(c)}>
+                          <MaterialIcons name="call-merge" size={15} color={Colors.primary} />
+                          <Text style={styles.expandedActionText}>Merge</Text>
+                        </Pressable>
+                        {c.is_default ? (
+                          <Pressable style={styles.expandedActionBtn} onPress={() => removeDefaultStatus(c)}>
+                            <MaterialIcons name="remove-circle-outline" size={15} color={Colors.primary} />
+                            <Text style={styles.expandedActionText}>Remove as Default</Text>
+                          </Pressable>
+                        ) : null}
+                        <Pressable style={[styles.expandedActionBtn, { borderColor: '#EF444440' }]} onPress={() => removeCategory(c)}>
+                          <MaterialIcons name="delete-outline" size={15} color="#EF4444" />
+                          <Text style={[styles.expandedActionText, { color: '#EF4444' }]}>Delete</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+                  );
+                })}
               </View>
             );
           })}
@@ -1012,6 +1087,19 @@ export default function BudgetsScreen() {
             <Text style={styles.sheetTitle}>{editingCatOriginalName ? 'Edit Category' : 'New Category'}</Text>
             <Text style={styles.blockLabel}>Name *</Text>
             <TextInput style={styles.input} value={catName} onChangeText={setCatName} placeholder="e.g. Groceries" placeholderTextColor={Colors.textMuted} />
+            <Text style={[styles.blockLabel, { marginTop: 10 }]}>Group</Text>
+            <View style={styles.sectionPickRow}>
+              {SECTIONS.map(sec => {
+                const on = catSection === sec.key;
+                return (
+                  <Pressable key={sec.key} style={[styles.sectionPick, on && { borderColor: sec.color, backgroundColor: sec.color + '14' }]} onPress={() => setCatSection(sec.key)}>
+                    <MaterialIcons name={sec.icon} size={18} color={on ? sec.color : Colors.textMuted} />
+                    <Text style={[styles.sectionPickText, on && { color: Colors.textPrimary }]} numberOfLines={1}>{sec.title.split(' ')[0]}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <Text style={styles.sectionPickHint}>{SECTIONS.find(x => x.key === catSection)?.blurb}</Text>
             <Text style={[styles.blockLabel, { marginTop: 10 }]}>Planned amount for {yearKey} *</Text>
             <TextInput style={styles.input} value={catPlanned} onChangeText={setCatPlanned} placeholder="0.00" placeholderTextColor={Colors.textMuted} keyboardType="decimal-pad" />
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
@@ -1083,6 +1171,18 @@ const styles = StyleSheet.create({
   emptyCta: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.primary, borderRadius: Radius.full, paddingHorizontal: 18, paddingVertical: 12, marginTop: 8, ...Shadow.glow },
   catCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, ...Shadow.card },
   catHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14 },
+  catCardDim: { opacity: 0.6 },
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 4, paddingTop: 12, paddingBottom: 2 },
+  sectionIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  sectionTitle: { fontSize: 17, fontWeight: '800', color: Colors.textPrimary, flexShrink: 1 },
+  sectionBlurb: { fontSize: 12.5, color: Colors.textMuted },
+  sectionAmt: { fontSize: 14, fontWeight: '800', color: Colors.textPrimary },
+  overBadge: { backgroundColor: Colors.error + '18', borderRadius: Radius.full, paddingHorizontal: 8, paddingVertical: 2 },
+  overBadgeText: { color: Colors.error, fontSize: 11.5, fontWeight: '800' },
+  sectionPickRow: { flexDirection: 'row', gap: 8 },
+  sectionPick: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 10, borderRadius: Radius.md, borderWidth: 1.5, borderColor: Colors.surfaceBorder, backgroundColor: Colors.background },
+  sectionPickText: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary },
+  sectionPickHint: { fontSize: 12.5, color: Colors.textMuted, marginTop: 6 },
   catIcon: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
   catHeaderOf: { fontWeight: '500', color: Colors.textMuted },
   catNoBudget: { fontSize: 12.5, color: Colors.textMuted },
