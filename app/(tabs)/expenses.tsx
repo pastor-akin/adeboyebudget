@@ -120,7 +120,10 @@ export default function ExpensesScreen() {
   }, [showAdd]);
 
   function budgetFor(cat: Category): number {
-    return modalBudgets.find(b => b.category === cat && b.frequency === 'monthly')?.amount ?? 0;
+    const monthly = modalBudgets.filter(b => b.frequency === 'monthly' && b.month === toMonthKey());
+    if (monthly.length > 0) return Number(monthly.find(b => b.category === cat)?.amount ?? 0);
+    const yearly = modalBudgets.find(b => b.category === cat && b.frequency === 'yearly');
+    return yearly ? Number(yearly.amount) / 12 : 0;
   }
   function spentFor(cat: Category): number {
     return modalExpenses.filter(e => e.category === cat).reduce((s, e) => s + e.amount, 0);
@@ -453,30 +456,36 @@ export default function ExpensesScreen() {
             {modalLoading ? (
               <ActivityIndicator color={Colors.primary} style={{ marginBottom: 16 }} />
             ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow} contentContainerStyle={{ gap: 8, paddingRight: 8 }}>
+              <View style={styles.catTileGrid}>
                 {(rememberedFrom && !categoryTouched
-                  // keep the remembered category visible at the front of the row
+                  // keep the remembered category at the front of the grid
                   ? [...categories].sort((a, b) => (a.name === category ? -1 : b.name === category ? 1 : 0))
                   : categories
                 ).map(cat => {
                   const isSelected = category === cat.name;
+                  const left = remainingFor(cat.name);
+                  const over = left !== null && left < 0;
+                  const tint = cat.color ?? CategoryColors[cat.name] ?? '#64748B';
                   return (
                     <TouchableOpacity
                       key={cat.name}
-                      style={[styles.chip, isSelected && { borderColor: cat.color, backgroundColor: cat.color + '22' }]}
+                      style={[styles.catTile, isSelected && { borderColor: tint, backgroundColor: tint + '1A' }]}
                       onPress={() => { setCategory(cat.name); setCategoryTouched(true); }}
                       activeOpacity={0.75}
                     >
-                      <Text style={styles.chipEmoji}>{cat.emoji}</Text>
-                      <Text style={[styles.chipName, isSelected && { color: cat.color }]} numberOfLines={1}>{cat.name}</Text>
+                      <Text style={styles.catTileEmoji}>{cat.emoji}</Text>
+                      <Text style={[styles.catTileName, isSelected && { color: tint }]} numberOfLines={2}>{cat.name}</Text>
+                      <Text style={[styles.catTileLeft, over && { color: Colors.error }, left === null && { color: Colors.textMuted }]} numberOfLines={1} adjustsFontSizeToFit>
+                        {left === null ? 'No budget' : `${over ? '−' : ''}$${Math.round(Math.abs(left)).toLocaleString('en-US')} ${over ? 'over' : 'left'}`}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}
-                <TouchableOpacity style={[styles.chip, styles.chipAdd]} onPress={() => setShowNewCat(true)}>
-                  <Ionicons name="add" size={16} color={Colors.textSecondary} />
+                <TouchableOpacity style={[styles.catTile, styles.catTileAdd]} onPress={() => setShowNewCat(true)}>
+                  <Ionicons name="add" size={22} color={Colors.textSecondary} />
                   <Text style={styles.chipAddText}>New</Text>
                 </TouchableOpacity>
-              </ScrollView>
+              </View>
             )}
 
             {/* One place for budget status — instead of showing spent/remaining
@@ -616,6 +625,12 @@ const styles = StyleSheet.create({
   amountInputOver: { borderColor: Colors.error, color: Colors.error },
   overBudgetWarning: { fontSize: 13, color: Colors.error, fontWeight: '600', marginTop: -8, marginBottom: 16, paddingHorizontal: 4 },
   chipRow: { marginBottom: 12 },
+  catTileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  catTile: { width: '31%', minHeight: 92, backgroundColor: Colors.surface, borderRadius: Radius.md, borderWidth: 2, borderColor: Colors.border, padding: 8, alignItems: 'center', justifyContent: 'center', gap: 2 },
+  catTileAdd: { borderStyle: 'dashed' },
+  catTileEmoji: { fontSize: 20 },
+  catTileName: { fontSize: 12.5, fontWeight: '700', color: Colors.text, textAlign: 'center', lineHeight: 15 },
+  catTileLeft: { fontSize: 11.5, fontWeight: '700', color: Colors.income, marginTop: 1 },
   chip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.surface, borderRadius: Radius.full, borderWidth: 2, borderColor: Colors.border, paddingHorizontal: 14, paddingVertical: 9 },
   chipAdd: { borderColor: Colors.border, borderStyle: 'dashed' },
   chipEmoji: { fontSize: 16 },
