@@ -11,7 +11,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Pressable, ScrollView, TextInput,
-  KeyboardAvoidingView, Platform, UIManager, LayoutAnimation, ActivityIndicator, Image, Share,
+  KeyboardAvoidingView, Platform, UIManager, LayoutAnimation, ActivityIndicator, Image, Share, useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -36,6 +36,8 @@ import {
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimentalAndroid) {
   UIManager.setLayoutAnimationEnabledExperimentalAndroid(true);
 }
+
+const TILE_GAP = 8;
 
 type Mode = 'categories' | 'expenses' | 'income' | 'overview';
 
@@ -69,6 +71,7 @@ function decodeNote(note?: string): { vendor: string; desc: string } {
 
 export default function BudgetsScreen() {
   const [year, setYear] = useState(new Date().getFullYear());
+  const { width: screenWidth } = useWindowDimensions();
   const yearKey = String(year);
   const [mode, setMode] = useState<Mode>('categories');
   const [loading, setLoading] = useState(true);
@@ -897,6 +900,9 @@ export default function BudgetsScreen() {
     { key: 'unsorted', title: 'Not sorted yet', blurb: 'Tap a category → Edit to choose its group', icon: 'help-outline' as const, color: Colors.textMuted, cats: categories.filter(c => !sectionFor(c)).sort(byAttention) },
   ].filter(g => g.cats.length > 0);
 
+  const tileCols = screenWidth >= 600 ? 4 : 3;
+  const tileWidth = Math.floor((screenWidth - Spacing.md * 2 - TILE_GAP * (tileCols - 1)) / tileCols);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
@@ -992,74 +998,104 @@ export default function BudgetsScreen() {
                   </View>
                   <MaterialIcons name={collapsed ? 'expand-more' : 'expand-less'} size={24} color={Colors.textMuted} />
                 </Pressable>
-                {collapsed ? null : g.cats.map(c => {
-                  const planned = plannedByCategory[c.name] ?? 0;
-                  const spent = spentByCategory[c.name] ?? 0;
-                  const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
-                  const over = planned > 0 && spent > planned;
-                  const isExpanded = expandedCategory === c.name;
-                  const dim = planned === 0 && spent === 0;
-                  return (
-                <View key={c.name} style={[styles.catCard, dim && styles.catCardDim]}>
-                  <Pressable style={styles.catHeaderRow} onPress={() => toggleExpand(c.name)}>
-                    <View style={[styles.catIcon, { backgroundColor: (c.color ?? CategoryColors[c.name] ?? '#64748B') + '22' }]}>
-                      <Text style={{ fontSize: 19 }}>{c.emoji}</Text>
-                    </View>
-                    <View style={{ flex: 1, gap: 6 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                        <Text style={styles.catTitle} numberOfLines={1}>{c.name}</Text>
-                        <Text style={[styles.catHeaderAmt, over && { color: Colors.error }]}>
-                          {whole(spent)}{planned > 0 ? <Text style={styles.catHeaderOf}> / {whole(planned)}</Text> : null}
-                        </Text>
-                      </View>
-                      {planned > 0 ? (
-                        <View style={styles.progressBarBg}>
-                          <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: over ? Colors.error : pct > 85 ? Colors.warning : (c.color ?? Colors.primary) }]} />
-                        </View>
-                      ) : <Text style={styles.catNoBudget}>No budget set</Text>}
-                    </View>
-                    <MaterialIcons name={isExpanded ? 'expand-less' : 'expand-more'} size={22} color={Colors.textMuted} />
-                  </Pressable>
-
-                  {isExpanded ? (
-                    <View style={styles.catExpanded}>
-                      <Text style={styles.catMeta}>
-                        {planned > 0 ? `$${fmt(spent)} of $${fmt(planned)} spent${over ? ' — over budget' : ''}` : `$${fmt(spent)} spent this year · No budget set`}
-                      </Text>
-                      <View style={styles.catExpandedActions}>
-                        <Pressable style={styles.expandedActionBtn} onPress={() => openExpenses(c)}>
-                          <MaterialIcons name="receipt-long" size={15} color={Colors.primary} />
-                          <Text style={styles.expandedActionText}>Expenses</Text>
+                {collapsed ? null : (
+                  <View style={styles.tileGrid}>
+                    {g.cats.map(c => {
+                      const planned = plannedByCategory[c.name] ?? 0;
+                      const spent = spentByCategory[c.name] ?? 0;
+                      const left = planned - spent;
+                      const pct = planned > 0 ? Math.min(100, (spent / planned) * 100) : 0;
+                      const over = planned > 0 && spent > planned;
+                      const dim = planned === 0 && spent === 0;
+                      const tint = c.color ?? CategoryColors[c.name] ?? '#64748B';
+                      return (
+                        <Pressable
+                          key={c.name}
+                          style={({ pressed }) => [styles.tile, { width: tileWidth }, over && styles.tileOver, dim && styles.catCardDim, pressed && { opacity: 0.75 }]}
+                          onPress={() => openExpenses(c)}
+                          onLongPress={() => setExpandedCategory(c.name)}
+                          delayLongPress={350}
+                        >
+                          <View style={styles.tileTop}>
+                            <View style={[styles.tileIcon, { backgroundColor: tint + '22' }]}>
+                              <Text style={{ fontSize: 16 }}>{c.emoji}</Text>
+                            </View>
+                            <Pressable hitSlop={10} onPress={() => setExpandedCategory(c.name)}>
+                              <MaterialIcons name="more-horiz" size={18} color={Colors.textMuted} />
+                            </Pressable>
+                          </View>
+                          <Text style={styles.tileName} numberOfLines={2}>{c.name}</Text>
+                          {planned > 0 ? (
+                            <>
+                              <Text style={[styles.tileLeft, over && { color: Colors.error }]} numberOfLines={1} adjustsFontSizeToFit>
+                                {over ? `-${whole(Math.abs(left))}` : whole(left)}
+                              </Text>
+                              <Text style={styles.tileSub} numberOfLines={1}>{over ? 'over' : 'left'} of {whole(planned)}</Text>
+                              <View style={styles.progressBarBg}>
+                                <View style={[styles.progressBarFill, { width: `${pct}%` as any, backgroundColor: over ? Colors.error : pct > 85 ? Colors.warning : tint }]} />
+                              </View>
+                            </>
+                          ) : (
+                            <>
+                              <Text style={[styles.tileLeft, { color: Colors.textMuted }]} numberOfLines={1} adjustsFontSizeToFit>{whole(spent)}</Text>
+                              <Text style={styles.tileSub} numberOfLines={1}>spent · no budget</Text>
+                            </>
+                          )}
                         </Pressable>
-                        <Pressable style={styles.expandedActionBtn} onPress={() => openEditCategory(c)}>
-                          <MaterialIcons name="edit" size={15} color={Colors.primary} />
-                          <Text style={styles.expandedActionText}>Edit</Text>
-                        </Pressable>
-                        <Pressable style={styles.expandedActionBtn} onPress={() => openMergePicker(c)}>
-                          <MaterialIcons name="call-merge" size={15} color={Colors.primary} />
-                          <Text style={styles.expandedActionText}>Merge</Text>
-                        </Pressable>
-                        {c.is_default ? (
-                          <Pressable style={styles.expandedActionBtn} onPress={() => removeDefaultStatus(c)}>
-                            <MaterialIcons name="remove-circle-outline" size={15} color={Colors.primary} />
-                            <Text style={styles.expandedActionText}>Remove as Default</Text>
-                          </Pressable>
-                        ) : null}
-                        <Pressable style={[styles.expandedActionBtn, { borderColor: '#EF444440' }]} onPress={() => removeCategory(c)}>
-                          <MaterialIcons name="delete-outline" size={15} color="#EF4444" />
-                          <Text style={[styles.expandedActionText, { color: '#EF4444' }]}>Delete</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ) : null}
-                </View>
-                  );
-                })}
+                      );
+                    })}
+                  </View>
+                )}
               </View>
             );
           })}
         </ScrollView>
       )}
+
+      {expandedCategory && categories.find(x => x.name === expandedCategory) ? (() => {
+        const c = categories.find(x => x.name === expandedCategory)!;
+        const planned = plannedByCategory[c.name] ?? 0;
+        const spent = spentByCategory[c.name] ?? 0;
+        const over = planned > 0 && spent > planned;
+        const close = () => setExpandedCategory(null);
+        return (
+          <Pressable style={styles.sheetOverlay} onPress={close}>
+            <Pressable style={styles.sheet} onPress={() => {}}>
+              <Text style={styles.sheetTitle}>{c.emoji} {c.name}</Text>
+              <Text style={styles.catMeta}>
+                {planned > 0 ? `$${fmt(spent)} of $${fmt(planned)} spent${over ? ' — over budget' : ` · $${fmt(planned - spent)} left`}` : `$${fmt(spent)} spent this year · No budget set`}
+              </Text>
+              <View style={styles.catExpandedActions}>
+                <Pressable style={styles.expandedActionBtn} onPress={() => { close(); openExpenses(c); }}>
+                  <MaterialIcons name="receipt-long" size={15} color={Colors.primary} />
+                  <Text style={styles.expandedActionText}>Expenses</Text>
+                </Pressable>
+                <Pressable style={styles.expandedActionBtn} onPress={() => { close(); openEditCategory(c); }}>
+                  <MaterialIcons name="edit" size={15} color={Colors.primary} />
+                  <Text style={styles.expandedActionText}>Edit</Text>
+                </Pressable>
+                <Pressable style={styles.expandedActionBtn} onPress={() => { close(); openMergePicker(c); }}>
+                  <MaterialIcons name="call-merge" size={15} color={Colors.primary} />
+                  <Text style={styles.expandedActionText}>Merge</Text>
+                </Pressable>
+                {c.is_default ? (
+                  <Pressable style={styles.expandedActionBtn} onPress={() => { close(); removeDefaultStatus(c); }}>
+                    <MaterialIcons name="remove-circle-outline" size={15} color={Colors.primary} />
+                    <Text style={styles.expandedActionText}>Remove as Default</Text>
+                  </Pressable>
+                ) : null}
+                <Pressable style={[styles.expandedActionBtn, { borderColor: '#EF444440' }]} onPress={() => { close(); removeCategory(c); }}>
+                  <MaterialIcons name="delete-outline" size={15} color="#EF4444" />
+                  <Text style={[styles.expandedActionText, { color: '#EF4444' }]}>Delete</Text>
+                </Pressable>
+              </View>
+              <Pressable style={[styles.cancelBtn, { marginTop: 14 }]} onPress={close}>
+                <Text style={styles.cancelBtnText}>Close</Text>
+              </Pressable>
+            </Pressable>
+          </Pressable>
+        );
+      })() : null}
 
       {mergeSource ? (
         <View style={styles.sheetOverlay}>
@@ -1196,6 +1232,15 @@ const styles = StyleSheet.create({
   expandedActionText: { ...Typography.label, color: Colors.primary, fontWeight: '700', fontSize: 12.5 },
   catActions: { flexDirection: 'column', gap: 6 },
   iconBtn: { width: 30, height: 30, borderRadius: Radius.md, backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.surfaceBorder, alignItems: 'center', justifyContent: 'center' },
+  // category tiles
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: TILE_GAP },
+  tile: { backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: 10, gap: 3, minHeight: 128, borderWidth: 1.5, borderColor: 'transparent', ...Shadow.card },
+  tileOver: { borderColor: Colors.error + '55' },
+  tileTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 2 },
+  tileIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  tileName: { fontSize: 13, fontWeight: '700', color: Colors.textPrimary, lineHeight: 16, minHeight: 32 },
+  tileLeft: { fontSize: 18, fontWeight: '800', color: Colors.textPrimary, letterSpacing: -0.3 },
+  tileSub: { fontSize: 11, color: Colors.textMuted, marginBottom: 4 },
   // "this month" summary
   thisMonthCard: { backgroundColor: Colors.surface, borderRadius: Radius.lg, padding: Spacing.md, gap: 10, ...Shadow.card },
   thisMonthTitle: { ...Typography.h3, color: Colors.textPrimary, fontWeight: '700', fontSize: 16 },
