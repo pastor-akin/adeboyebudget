@@ -4,7 +4,7 @@
  * and the latest activity from both partners.
  */
 import { useCallback, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, RefreshControl } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, RefreshControl, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -28,6 +28,7 @@ function greeting(): string {
 
 export default function HomeScreen() {
   const router = useRouter();
+  const { width: screenWidth } = useWindowDimensions();
   const [monthKey, setMonthKey] = useState(toMonthKey());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -88,7 +89,7 @@ export default function HomeScreen() {
     amount: expenses.filter(e => (e.added_by_name ?? '').toLowerCase() === p.toLowerCase()).reduce((s, e) => s + Number(e.amount), 0),
   }));
 
-  // categories to watch: the ones with a budget, most used first
+  // category lookups + this month's spending per category
   const catInfo = (name: string) => {
     const c = categories.find(x => x.name === name);
     return { emoji: c?.emoji ?? '📦', color: c?.color ?? CategoryColors[name] ?? '#64748B' };
@@ -103,6 +104,17 @@ export default function HomeScreen() {
       return rb - ra || b.spent - a.spent;
     })
     .slice(0, 4);
+
+  // all categories as tiles: balance left this month, most urgent first
+  const tileNames = Array.from(new Set([...categories.map(c => c.name), ...Object.keys(budgetByCat), ...Object.keys(spentByCat)]));
+  const tileRank = (b: number, sp: number) => (b > 0 && sp > b ? 0 : b > 0 && sp / b > 0.85 ? 1 : b > 0 ? 2 : sp > 0 ? 3 : 4);
+  const tiles = tileNames
+    .map(name => ({ name, budget: budgetByCat[name] ?? 0, spent: spentByCat[name] ?? 0 }))
+    .sort((a, b) => tileRank(a.budget, a.spent) - tileRank(b.budget, b.spent)
+      || (b.budget > 0 ? b.spent / b.budget : 0) - (a.budget > 0 ? a.spent / a.budget : 0)
+      || a.name.localeCompare(b.name));
+  const tileCols = screenWidth >= 600 ? 4 : 3;
+  const tileWidth = Math.floor((Math.min(screenWidth, 900) - 32 - 8 * (tileCols - 1)) / tileCols);
 
   const feed: FeedItem[] = [
     ...expenses.map(e => {
@@ -189,6 +201,47 @@ export default function HomeScreen() {
               ))}
             </View>
 
+            {/* Budget categories — one tile per category with what's left this month */}
+            {tiles.length > 0 ? (
+              <View style={styles.section}>
+                <View style={styles.rowBetween}>
+                  <Text style={ui.sectionTitle}>Budget left this month</Text>
+                  <Pressable onPress={() => router.push('/budgets')} hitSlop={8}><Text style={styles.link}>Manage</Text></Pressable>
+                </View>
+                <View style={styles.tileGrid}>
+                  {tiles.map(t => {
+                    const ci = catInfo(t.name);
+                    const hasBudget = t.budget > 0;
+                    const remaining = t.budget - t.spent;
+                    const over = hasBudget && remaining < 0;
+                    const ratio = hasBudget ? Math.min(1, t.spent / t.budget) : 0;
+                    const unused = !hasBudget && t.spent === 0;
+                    return (
+                      <Pressable
+                        key={t.name}
+                        style={({ pressed }) => [ui.card, styles.tile, { width: tileWidth }, over && styles.tileOver, unused && { opacity: 0.55 }, pressed && { opacity: 0.7 }]}
+                        onPress={() => router.push('/budgets')}
+                      >
+                        <View style={[styles.tileIcon, { backgroundColor: ci.color + '22' }]}><Text style={{ fontSize: 16 }}>{ci.emoji}</Text></View>
+                        <Text style={styles.tileName} numberOfLines={2}>{t.name}</Text>
+                        <Text style={[styles.tileLeft, over && { color: Colors.error }, !hasBudget && { color: Colors.textMuted }]} numberOfLines={1} adjustsFontSizeToFit>
+                          {hasBudget ? (over ? '−' : '') + money(Math.abs(remaining), { cents: false }) : money(t.spent, { cents: false })}
+                        </Text>
+                        <Text style={styles.tileSub} numberOfLines={1}>
+                          {hasBudget ? `${over ? 'over' : 'left'} of ${money(t.budget, { cents: false })}` : 'spent · no budget'}
+                        </Text>
+                        {hasBudget ? (
+                          <View style={styles.track}>
+                            <View style={[styles.fill, { width: `${ratio * 100}%` as any, backgroundColor: over ? Colors.error : ratio > 0.85 ? Colors.warning : ci.color }]} />
+                          </View>
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+            ) : null}
+
             {/* Who spent what */}
             {spent > 0 && spentBy.length > 0 ? (
               <View style={styles.section}>
@@ -208,41 +261,6 @@ export default function HomeScreen() {
                       </View>
                     </View>
                   ))}
-                </View>
-              </View>
-            ) : null}
-
-            {/* Budgets to watch */}
-            {watch.length > 0 ? (
-              <View style={styles.section}>
-                <View style={styles.rowBetween}>
-                  <Text style={ui.sectionTitle}>Budgets to watch</Text>
-                  <Pressable onPress={() => router.push('/budgets')} hitSlop={8}><Text style={styles.link}>See all</Text></Pressable>
-                </View>
-                <View style={[ui.card, styles.cardPad, { gap: 16 }]}>
-                  {watch.map(w => {
-                    const ci = catInfo(w.name);
-                    const over = w.budget > 0 && w.spent > w.budget;
-                    const ratio = w.budget > 0 ? Math.min(1, w.spent / w.budget) : 0;
-                    return (
-                      <View key={w.name} style={styles.personRow}>
-                        <View style={[styles.catCircle, { backgroundColor: ci.color + '22' }]}><Text style={{ fontSize: 18 }}>{ci.emoji}</Text></View>
-                        <View style={{ flex: 1, gap: 6 }}>
-                          <View style={styles.rowBetween}>
-                            <Text style={styles.personName} numberOfLines={1}>{w.name}</Text>
-                            <Text style={[styles.watchAmt, over && { color: Colors.error }]}>
-                              {money(w.spent, { cents: false })}{w.budget > 0 ? <Text style={styles.watchOf}> / {money(w.budget, { cents: false })}</Text> : null}
-                            </Text>
-                          </View>
-                          {w.budget > 0 ? (
-                            <View style={styles.track}>
-                              <View style={[styles.fill, { width: `${ratio * 100}%` as any, backgroundColor: over ? Colors.error : ratio > 0.85 ? Colors.warning : ci.color }]} />
-                            </View>
-                          ) : <Text style={styles.noBudget}>No budget set</Text>}
-                        </View>
-                      </View>
-                    );
-                  })}
                 </View>
               </View>
             ) : null}
@@ -337,6 +355,13 @@ const styles = StyleSheet.create({
   catCircle: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   watchAmt: { fontSize: 14.5, fontWeight: '700', color: Colors.text },
   watchOf: { fontWeight: '500', color: Colors.textMuted },
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  tile: { padding: 10, gap: 3, minHeight: 124, borderWidth: 1.5, borderColor: 'transparent' },
+  tileOver: { borderColor: Colors.error + '55' },
+  tileIcon: { width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginBottom: 2 },
+  tileName: { fontSize: 13, fontWeight: '700', color: Colors.text, lineHeight: 16, minHeight: 32 },
+  tileLeft: { fontSize: 18, fontWeight: '800', color: Colors.text, letterSpacing: -0.3 },
+  tileSub: { fontSize: 11, color: Colors.textMuted, marginBottom: 4 },
   noBudget: { fontSize: 12.5, color: Colors.textMuted },
   feedRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 12 },
   feedDivider: { borderTopWidth: 1, borderTopColor: Colors.border },
